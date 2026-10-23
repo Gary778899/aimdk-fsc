@@ -1,0 +1,25 @@
+# Request 部分
+CommonRequest request
+
+---
+
+# 响应头
+ResponseHeader header
+
+# current speed mode and speed bounds
+McLocomotionSpeedStatus current_speed_status
+
+# none
+McLocomotionSpeedStatus none_speed_status
+
+# low
+McLocomotionSpeedStatus low_speed_status
+
+# medium
+McLocomotionSpeedStatus medium_speed_status
+
+# high
+McLocomotionSpeedStatus high_speed_status
+
+# locomotion_step
+McLocomotionSpeedStatus step_speed_status

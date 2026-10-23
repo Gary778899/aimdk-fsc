@@ -1,0 +1,85 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "机器人：预览同步",
+            "type": "process",
+            "command": "rsync",
+            "args": [
+                "-az",
+                "--dry-run",
+                "--delete",
+                "--itemize-changes",
+                "--human-readable",
+                "--exclude=.git/",
+                "--exclude=.vscode/",
+                "--exclude=.agents/",
+                "--exclude=.codex/",
+                "--exclude=.aws/",
+                "--exclude=build/",
+                "--exclude=install/",
+                "--exclude=log/",
+                "--exclude=.venv/",
+                "--exclude=build-humble/",
+                "--exclude=install-humble/",
+                "--exclude=log-humble/",
+                "--exclude=.venv-humble/",
+                "--exclude=prebuilt_*/",
+                "--exclude=__pycache__/",
+                "--exclude=*.pyc",
+                "--exclude=*.md",
+                "--exclude=.pytest_cache/",
+                "--rsync-path=mkdir -p /home/agi/aimdk-fsc/ && rsync",
+                "${workspaceFolder}/",
+                "agi@10.0.1.41:/home/agi/aimdk-fsc/"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true,
+                "focus": true
+            }
+        },
+        {
+            "label": "机器人：推送工作区",
+            "type": "process",
+            "command": "rsync",
+            "args": [
+                "-az",
+                "--itemize-changes",
+                "--human-readable",
+                "--info=progress2",
+                "--delete",
+                "--exclude=.git/",
+                "--exclude=.vscode/",
+                "--exclude=.agents/",
+                "--exclude=.codex/",
+                "--exclude=.aws/",
+                "--exclude=build/",
+                "--exclude=install/",
+                "--exclude=log/",
+                "--exclude=.venv/",
+                "--exclude=build-humble/",
+                "--exclude=install-humble/",
+                "--exclude=log-humble/",
+                "--exclude=.venv-humble/",
+                "--exclude=prebuilt_*/",
+                "--exclude=__pycache__/",
+                "--exclude=*.pyc",
+                "--exclude=*.md",
+                "--exclude=.pytest_cache/",
+                "--rsync-path=mkdir -p /home/agi/aimdk-fsc/ && rsync",
+                "${workspaceFolder}/",
+                "agi@10.0.1.41:/home/agi/aimdk-fsc/"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true,
+                "focus": true
+            }
+        }
+    ]
+}

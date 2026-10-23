@@ -1,0 +1,31 @@
+hardware_wrapper_node:
+  ros__parameters:
+    require_head: false
+    require_arm: false
+    require_waist: false
+    require_leg: true
+    # These groups are deliberately not consumed in this legs-only WBC profile.
+    # Supply verified name lists and real input topics before enabling them.
+    head_joint_state_topic: /wbc_observer/unused/head
+    arm_joint_state_topic: /wbc_observer/unused/arm
+    waist_joint_state_topic: /wbc_observer/unused/waist
+    leg_joint_state_topic: /aima/hal/joint/leg/state
+    leg_expected_names:
+      - left_hip_pitch_joint
+      - left_hip_roll_joint
+      - left_hip_yaw_joint
+      - left_knee_joint
+      - left_ankle_pitch_joint
+      - left_ankle_roll_joint
+      - right_hip_pitch_joint
+      - right_hip_roll_joint
+      - right_hip_yaw_joint
+      - right_knee_joint
+      - right_ankle_pitch_joint
+      - right_ankle_roll_joint
+    imu_input_topic: /aima/hal/imu/chest/state
+    joint_state_topic: /humanoid/joint_states
+    imu_topic: /humanoid/imu
+    max_age_sec: 0.1
+    max_group_skew_sec: 0.02
+    future_tolerance_sec: 0.005

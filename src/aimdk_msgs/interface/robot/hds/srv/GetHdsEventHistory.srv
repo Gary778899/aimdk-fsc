@@ -1,0 +1,19 @@
+# 请求头
+RequestHeader header
+
+# 过滤条件
+HdsEventQuery query
+
+---
+
+# 响应头
+ResponseHeader header
+
+# 历史事件记录
+HdsEventRecord[] records
+
+# 满足过滤条件的总记录数
+uint32 total_count
+
+# 是否还有更多数据
+bool has_more

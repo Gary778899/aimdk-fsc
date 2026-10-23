@@ -1,0 +1,19 @@
+int32 value
+
+# 未知
+int32 MC_BODY_POSE_UNKOWN = 0
+
+# 站立
+int32 MC_BODY_POSE_STAND = 1
+
+# 躺
+int32 MC_BODY_POSE_LIE_FACE_UP = 2
+
+# 趴
+int32 MC_BODY_POSE_LIE_FACE_DOWN = 3
+
+# 坐
+int32 MC_BODY_POSE_SIT = 4
+
+# 蹲
+int32 MC_BODY_POSE_SQUAT = 5

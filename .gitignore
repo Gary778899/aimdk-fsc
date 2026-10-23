@@ -1,0 +1,50 @@
+# ROS 2 / colcon 构建、安装与运行产物。
+/build/
+/build-*/
+/install/
+/install-*/
+/log/
+/log-*/
+
+# Python 虚拟环境、缓存与打包产物。
+.venv/
+.venv-*/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# SDK 预编译资源与生成文档：本地保留，从官方 SDK 恢复。
+/src/aimdk_msgs/prebuilt_*/
+/docs/cn/_build/
+
+# 独立参考工程暂不纳入当前仓库，后续修改时单独评估。
+/extra/
+
+# 实验数据与导出结果；Git 忽略规则不会保护 rsync 目标端文件。
+/rosbags/
+/data/
+/datasets/
+/exports/
+*.mcap
+*.db3
+*.db3-shm
+*.db3-wal
+
+# 本机工具状态、凭据和编辑器临时文件。
+/.agents/
+/.codex/
+/.aws/
+/.cache/
+.env
+.env.local
+*.swp
+*.swo
+*~
+.DS_Store

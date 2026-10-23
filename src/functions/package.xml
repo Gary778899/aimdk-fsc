@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>aimdk_functions</name>
+  <version>0.1.0</version>
+  <description>Custom robot utility commands for AimDK.</description>
+  <maintainer email="gary@example.com">gary</maintainer>
+  <license>TODO: License declaration</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>aimdk_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

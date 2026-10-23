@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+
+import rclpy
+import rclpy.logging
+from rclpy.node import Node
+from aimdk_msgs.msg import McLocomotionVelocity, McInputAction, MessageHeader
+from aimdk_msgs.srv import SetMcInputSource
+import curses
+
+
+class KeyboardVelocityController(Node):
+    def __init__(self, stdscr):
+        super().__init__('keyboard_velocity_controller')
+        self.stdscr = stdscr
+        self.forward_velocity = 0.0
+        self.lateral_velocity = 0.0
+        self.angular_velocity = 0.0
+        self.step = 0.2
+        self.angular_step = 0.1
+
+        self.publisher = self.create_publisher(
+            McLocomotionVelocity, '/aima/mc/locomotion/velocity', 10)
+        self.client = self.create_client(
+            SetMcInputSource, '/aimdk_5Fmsgs/srv/SetMcInputSource')
+
+        if not self.register_input_source():
+            self.get_logger().error("❌ Input source registration failed, exiting")
+            raise RuntimeError("Failed to register input source")
+
+        # Configure curses
+        curses.cbreak()
+        curses.noecho()
+        self.stdscr.keypad(True)
+        self.stdscr.nodelay(True)
+
+        self.get_logger().info(
+            "Control started: W/S forward/backward, A/D strafe, Q/E turn, Space stop, Esc exit")
+
+        # Timer: check keyboard every 50 ms
+        self.timer = self.create_timer(0.05, self.check_key_and_publish)
+
+    def _call_input_source(self, action_value):
+        action_name = {
+            McInputAction.INPUTACTION_ADD: "ADD",
+            McInputAction.INPUTACTION_ENABLE: "ENABLE",
+        }.get(action_value, str(action_value))
+
+        req = SetMcInputSource.Request()
+        req.action.value = action_value
+        req.input_source.name = "node.keyboard"
+        req.input_source.priority = 40
+        req.input_source.timeout = 1000
+
+        future = None
+        for i in range(8):
+            req.request.header.stamp = self.get_clock().now().to_msg()
+            future = self.client.call_async(req)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=0.25)
+            if future.done():
+                break
+            # retry as remote peer is NOT handled well by ROS
+            self.get_logger().info(
+                f"trying input source action {action_name} ({action_value})... [{i}]")
+
+        if future is None or not future.done():
+            return False
+        try:
+            resp = future.result()
+        except Exception as e:
+            self.get_logger().error(f"Service exception: {str(e)}")
+            return False
+        return resp is not None and resp.response.header.code == 0
+
+    def register_input_source(self):
+        self.get_logger().info("Registering input source...")
+
+        timeout_sec = 8.0
+        start = self.get_clock().now().nanoseconds / 1e9
+
+        while not self.client.wait_for_service(timeout_sec=2.0):
+            now = self.get_clock().now().nanoseconds / 1e9
+            if now - start > timeout_sec:
+                self.get_logger().error("Waiting for service timed out")
+                return False
+            self.get_logger().info("Waiting for input source service...")
+
+        # Try ADD first; if already registered, fall back to ENABLE
+        if self._call_input_source(McInputAction.INPUTACTION_ADD):  # ADD (1001)
+            self.get_logger().info("✅ Input source registered (ADD).")
+            return True
+        self.get_logger().info(
+            "ADD failed (likely already registered), trying ENABLE...")
+        if self._call_input_source(McInputAction.INPUTACTION_ENABLE):  # ENABLE (2001)
+            self.get_logger().info("✅ Input source enabled.")
+            return True
+        self.get_logger().error(
+            "❌ Failed to register input source via ADD or ENABLE.")
+        return False
+
+    def check_key_and_publish(self):
+        try:
+            ch = self.stdscr.getch()
+        except Exception:
+            ch = -1
+
+        if ch != -1:
+            if ch == ord(' '):
+                self.forward_velocity = 0.0
+                self.lateral_velocity = 0.0
+                self.angular_velocity = 0.0
+            elif ch == ord('w'):
+                self.forward_velocity = min(
+                    self.forward_velocity + self.step, 1.0)
+            elif ch == ord('s'):
+                self.forward_velocity = max(
+                    self.forward_velocity - self.step, -1.0)
+            elif ch == ord('a'):
+                self.lateral_velocity = min(
+                    self.lateral_velocity + self.step, 1.0)
+            elif ch == ord('d'):
+                self.lateral_velocity = max(
+                    self.lateral_velocity - self.step, -1.0)
+            elif ch == ord('q'):
+                self.angular_velocity = min(
+                    self.angular_velocity + self.angular_step, 1.0)
+            elif ch == ord('e'):
+                self.angular_velocity = max(
+                    self.angular_velocity - self.angular_step, -1.0)
+            elif ch == 27:  # ESC
+                self.get_logger().info("Exiting control")
+                self.timer.cancel()
+                return
+
+        msg = McLocomotionVelocity()
+        msg.header = MessageHeader()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.source = "node.keyboard"
+        msg.forward_velocity = self.forward_velocity
+        msg.lateral_velocity = self.lateral_velocity
+        msg.angular_velocity = self.angular_velocity
+
+        self.publisher.publish(msg)
+
+        # Update UI
+        self.stdscr.clear()
+        self.stdscr.addstr(
+            0, 0, "W/S: Forward/Backward | A/D: Strafe | Q/E: Turn | Space: Stop | ESC: Exit")
+        self.stdscr.addstr(2, 0,
+                           f"Speed Status: Forward: {self.forward_velocity:.2f} m/s | "
+                           f"Lateral: {self.lateral_velocity:.2f} m/s | "
+                           f"Angular: {self.angular_velocity:.2f} rad/s")
+        self.stdscr.refresh()
+
+
+def curses_main(stdscr):
+    rclpy.init()
+    try:
+        node = KeyboardVelocityController(stdscr)
+        while not node.timer.is_canceled():
+            rclpy.spin_once(node, timeout_sec=0.1)
+    except (Exception, KeyboardInterrupt) as e:
+        rclpy.logging.get_logger("main").fatal(
+            f"Program exited with exception: {e}")
+    finally:
+        curses.endwin()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+def main():
+    curses.wrapper(curses_main)
+
+
+if __name__ == '__main__':
+    main()
