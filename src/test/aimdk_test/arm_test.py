@@ -44,8 +44,8 @@ def parser():
 class BaselinePort:
     """ROS adapter containing only three subscribers and a GetMcAction client."""
 
-    def __init__(self, rclpy, node, options, diagnostics):
-        """Construct read-only ROS resources with SDK feedback QoS; retain supplied diagnostics."""
+    def __init__(self, rclpy, node, options, diagnostics, get_client=None):
+        """按 SDK QoS 创建只读资源；get_client 可传入已就绪的模式查询客户端。"""
         from aimdk_msgs.msg import JointStateArray, HandStateArray, McCommonState
         from aimdk_msgs.srv import GetMcAction
         from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
@@ -62,7 +62,8 @@ class BaselinePort:
             node.create_subscription(McCommonState, '/aima/mc/common/state', self.on_mc, qos),
         ]
         self.get_type = GetMcAction
-        self.client = node.create_client(GetMcAction, '/aimdk_5Fmsgs/srv/GetMcAction')
+        self.client = (get_client if get_client is not None else
+                       node.create_client(GetMcAction, '/aimdk_5Fmsgs/srv/GetMcAction'))
 
     def receive(self, name, msg):
         """Decode feedback, preserving original header and received data even when validation fails."""

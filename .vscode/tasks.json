@@ -29,6 +29,8 @@
                 "--exclude=*.pyc",
                 "--exclude=*.md",
                 "--exclude=.pytest_cache/",
+                "--exclude=src/locomotion_wrapper",
+                "--exclude=src/data_collection_edge_agent/",
                 "--rsync-path=mkdir -p /home/agi/aimdk-fsc/ && rsync",
                 "${workspaceFolder}/",
                 "agi@10.0.1.41:/home/agi/aimdk-fsc/"
@@ -69,6 +71,8 @@
                 "--exclude=*.pyc",
                 "--exclude=*.md",
                 "--exclude=.pytest_cache/",
+                "--exclude=src/locomotion_wrapper",
+                "--exclude=src/data_collection_edge_agent/",
                 "--rsync-path=mkdir -p /home/agi/aimdk-fsc/ && rsync",
                 "${workspaceFolder}/",
                 "agi@10.0.1.41:/home/agi/aimdk-fsc/"

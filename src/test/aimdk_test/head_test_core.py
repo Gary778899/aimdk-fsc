@@ -67,8 +67,15 @@ def validate_pose(positions):
 
 
 class FeedbackMonitor:
-    def __init__(self):
-        """Initialize head feedback and ROS/source clock observations."""
+    def __init__(self, feedback_timeout=.2):
+        """初始化反馈监视器。
+
+        feedback_timeout 是接收间隔、源时间停滞及源时间年龄的秒数上限，
+        默认 0.2 秒；无效数值抛出 TestFailure。ROS 时钟停滞上限始终为 0.2 秒。
+        """
+        if not math.isfinite(feedback_timeout) or feedback_timeout <= 0:
+            raise TestFailure('feedback_timeout must be positive and finite')
+        self.feedback_timeout = feedback_timeout
         self.latest = None
         self.source_advanced_at = None
         self.last_ros = None
@@ -94,23 +101,24 @@ class FeedbackMonitor:
         self.last_ros = ros_now
 
     def checked(self, now, ros_now):
-        """Return fresh feedback or raise TestFailure with the failed age and limit."""
+        """返回满足各自时限的反馈；失败时抛出含实际年龄及上限的 TestFailure。"""
         self.observe_clock(now, ros_now)
         fb = self.latest
         if fb is None:
             raise TestFailure('head feedback unavailable')
         ages = {
-            'head receive gap': now - fb.received,
-            'head source timestamp frozen': now - self.source_advanced_at,
-            'ROS clock frozen': now - self.clock_advanced_at,
+            'head receive gap': (now - fb.received, self.feedback_timeout),
+            'head source timestamp frozen': (now - self.source_advanced_at, self.feedback_timeout),
+            'ROS clock frozen': (now - self.clock_advanced_at, .2),
         }
-        failures = [f'{name}={age:.6f}s > 0.200000s'
-                    for name, age in ages.items() if age > .2]
+        failures = [f'{name}={age:.6f}s > {limit:.6f}s'
+                    for name, (age, limit) in ages.items() if age > limit]
         if failures:
             raise TestFailure('; '.join(failures))
         age = ros_now - fb.stamp
-        if not -.05 <= age <= .2:
-            raise TestFailure(f'feedback source/local clock mismatch or stale stamp: {age:.3f}s')
+        if not -.05 <= age <= self.feedback_timeout:
+            raise TestFailure(f'feedback source/local clock mismatch or stale stamp: {age:.3f}s; '
+                              f'allowed [-0.050000, {self.feedback_timeout:.6f}]s')
         return fb
 
 
