@@ -23,9 +23,6 @@ setup(
         'console_scripts': [
             'head_test = aimdk_test.head_test:main',
             'arm_test = aimdk_test.arm_test:main',
-            'dual_arm_control = aimdk_test.dual_arm_control:main',
-            'shoulder_direction_test = aimdk_test.shoulder_direction_test:main',
-            'gripper_close = aimdk_test.gripper_close:main',
         ],
     },
 )

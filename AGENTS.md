@@ -33,7 +33,7 @@
 | 官方示例 | `src/examples/` → `examples`；`src/py_examples/` → `py_examples` | C++／Python SDK 调用示例，用于理解接口；自研功能分别进入下述自研包，不把示例模块作为公共库。 |
 | 官方诊断工具 | `src/robotop/` → `robotop` | 官方 SDK 自带的终端状态、日志、通信与故障诊断工具，以及独立 Orin 资源监视节点；不承载自研采集或实验状态机。 |
 | 自研实验工具 | `src/test/` → `aimdk_test` | 头部、手臂诊断与运动实验。入口为 `aimdk_test/head_test.py`、`arm_test.py`；`*_core.py` 为无 ROS 导入的校验／算法核心，`arm_test_motion.py` 为手臂 ROS 执行适配，`head_test_diagnostics.py` 提供实验 JSONL 日志。这里的 `test` 是业务包目录，不是全工作区单元测试目录。 |
-| 自研功能命令 | `src/functions/` → `aimdk_functions` | 独立实用功能，目前入口为 `aimdk_functions/volume_control.py`（音量／静音）；不作为所有公共代码的汇总包。 |
+| 自研功能命令 | `src/functions/` → `aimdk_functions` | 独立实用功能：`volume_control.py`（音量／静音）、`dual_arm_control.py`（URS 下单次关节增量／夹爪开度）。双臂纯计算与反馈校验在 `dual_arm_control_core.py`，日志在 `dual_arm_control_diagnostics.py`；不依赖测试包，也不作为所有公共代码的汇总包。 |
 | 自研只读观测 | `src/locomotion_wrapper/` → `locomotion_wrapper` | 厂商关节状态聚合与标准 IMU 校验转发，不含运动控制或策略推理。节点在 `src/hardware_wrapper_node.cpp`，纯校验在 `include/locomotion_wrapper/state_validation.hpp`，配置在 `config/`，启动在 `launch/`，校验测试在 `test/`；`joint_watch.py` 仅监视标准关节状态。 |
 | 自研数据采集 | `src/data_collection_edge_agent/` → `data_collection_edge_agent` | 订阅标准 `JointState`／`Imu` 并录制 MCAP，通过 ZeroMQ START／STOP 控制录制。节点在 `src/data_collection_edge_agent_node.cpp`；`launch/data_collection_edge_agent.launch.py` 单独启动采集器，`robot_data_collection.launch.py` 当前组合启动观测包与采集器。 |
 
@@ -47,11 +47,12 @@
 
 ### 包边界与构建范围
 
-- 自研业务不依赖官方示例作为公共库，不向 `aimdk_msgs`、`ruckig` 或 `robotop` 混入实验业务。公共逻辑先在实际使用的包内整理；不要仅为目录分类新建包或搬动源码。`head_test_core.py`、`arm_test_core.py` 保持无 ROS 导入，ROS 服务、发布和执行状态机留在适配层。依据：[包边界与公共能力评审](docs/task_2_package_review.md)。
+- 自研业务不依赖官方示例作为公共库，不向 `aimdk_msgs`、`ruckig` 或 `robotop` 混入实验业务。公共逻辑先在实际使用的包内整理；不要仅为目录分类新建包或搬动源码。`head_test_core.py`、`arm_test_core.py`、`dual_arm_control_core.py` 保持无 ROS 导入，ROS 服务、发布和执行状态机留在适配层。依据：[包边界与公共能力评审](docs/task_2_package_review.md)、[功能包说明](src/functions/README.md)。
 - 容器构建命令显式限定 `--base-paths src`，避免纳入 `extra/` 独立工程及同名包。目录改名或依赖整理需同时核查入口、导入、日志路径探测和安装来源；受同步排除保护的旧安装产物不会自动清理。依据：[同步与构建要求](docs/task_2_package_review.md#6-同步构建与版本追溯)。
 
 ### 上肢实验与反馈
 
+- `aimdk_functions dual_arm_control` 是单次指令入口，支持七关节 tag、左／右／双侧及夹爪开度。要求操作者预先进入 URS/RUNNING，默认只读，显式 `--execute` 才发布；关节相对增量绝对值不超过 10°，采用五次插值且不自动返程或切换模式。限位按 SDK 1.7.1 与官方示例的交集及左右侧映射检查选定关节的起点、目标；未选关节和夹爪保持采样目标、不裁剪。旧双臂顺序、肩方向及独立夹爪入口已移除；`arm_test` 专项接管／交接诊断保留。新入口与旧流程的验证结论分开记录。依据：[功能包说明](src/functions/README.md)。
 - `head_test`、`arm_test` 默认只读，运动保留显式 `--execute` 开关，真机运动由用户明确启动。当前上肢实验保留下半身原生运控，通过 `/mc/upper_body_command` 控制，不改为 HAL 关节命令、不停止 MC。模式切换须有界查询实际目标模式及 `RUNNING`，不能仅凭 Set 服务成功回包认定接管完成。停止发布或请求 `STAND_DEFAULT` 都不能当作已验证的急停／必达恢复。依据：[研究规划](docs/research_plan.md)、[上肢接口核实](docs/archive/upper_body_interface_findings.md)。
 - 上肢位置命令使用 rad，`head_pos` 为两槽，`arm_pos` 为左臂 7 关节后右臂 7 关节；反馈按关节名称匹配并重排，不能依赖输入数组顺序。单臂实验仍构造完整双臂目标；夹爪模式 1 的 `hand_pos` 为左右开度，范围 0..1，不能将 0 模式或空数组解释为通用保持。重发当前开度只是位置目标，不等同于夹持力保持；固定消息槽位也不代表当前机型开放所有关节。依据：[上肢接口核实](docs/archive/upper_body_interface_findings.md)、`UpperBodyCommandArray.msg`、`arm_test_core.py`。
 - 控制反馈保留源时间，分别检查接收时效、源时间年龄及时间推进；不能用本机当前时间覆盖源时间来掩盖断流、冻结或回退。保留测试包的错误锁存及异常中止行为，不以观测包可自动恢复的无状态年龄校验替代。FSM 的源码与历史文档编码有冲突，未核实前不得把 raw=4 判作稳定，也不擅自恢复现有脚本已移除的 FSM 门槛。依据：[接口核实](docs/archive/upper_body_interface_findings.md)、[观测限制与公共能力评审](docs/task_2_package_review.md)。
@@ -82,4 +83,4 @@
 - 编写或修改脚本后，默认只进行必要的文件检查、语法检查、代码审阅等静态检查；项目构建、运行和测试默认由用户手动同步后在机器人开发板容器内完成。
 - 不要将本地检查结果表述为机器人容器内构建或测试通过。汇报验证情况时，明确执行环境、已完成的检查和未执行的验证。
 - 仅在任务确实需要远程连接、容器或挂载信息时，先检查项目现有配置和文档；仍无法确认时再向用户询问。不要因缺少这些信息而阻塞不依赖它们的代码编写和静态检查，也不要猜测执行命令或声称已完成验证。
-- 开发过程遵循优先实现最小闭环原则。即开发验证基础功能时，涉及到安全机制、保护门槛等函数方法，先评参考相近的官方实例脚本估其必要性。如官方实例脚本中并未强调要针对某种情况设立保护检查机制，不要自行添加。自
+- 开发优先实现最小功能闭环。新增安全机制、保护检查或中止门槛前，先参考相近官方示例，结合接口要求、当前实验目标和已观察到的问题评估必要性。缺乏明确依据的稳定性、时序或精度阈值，优先记录观测结果，不默认作为阻断条件；根据实测需要逐步增加，并说明依据。已有明确约定的接口约束和异常处理，不因本原则自动移除。

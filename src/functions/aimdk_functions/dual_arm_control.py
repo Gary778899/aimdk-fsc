@@ -1,85 +1,93 @@
-"""已处于 URS 时执行双肩 pitch 抬升 5 度、开闭夹爪及返回；默认只读。"""
-
+"""已处于 URS 时执行一次关节增量或夹爪开度动作；默认只读，不自动往返。"""
 import argparse
 import math
 import sys
 import time
 
-from aimdk_test.arm_test import BaselinePort
-from aimdk_test.arm_test_core import ARM_NAMES, URS, require_static_hands
-from aimdk_test.dual_arm_control_core import (
-    ARM_POSITION_TOLERANCE, SHOULDER_UP_SIGNS, check_arm, decode_urs_mc, interpolate, shoulder_target,
+from aimdk_functions.dual_arm_control_core import (
+    ARM_NAMES, ARM_POSITION_TOLERANCE, JOINT_TAGS, URS, ControlFailure,
+    Stream, FeedbackMonitor, decode_arm, decode_hand, decode_urs_mc,
+    require_static_hands, check_arm, interpolate, joint_target, gripper_target,
 )
-from aimdk_test.head_test_core import FeedbackMonitor, TestFailure
-from aimdk_test.head_test_diagnostics import DiagnosticLog
+from aimdk_functions.dual_arm_control_diagnostics import DiagnosticLog
 
 
-def parser(probe=False, close_gripper=False):
-    """创建选项；probe 配置单肩验证，close_gripper 配置独立夹爪开度命令。"""
-    description = ('保持双臂实测位置并控制指定夹爪开度；默认只读，要求预先进入 URS。'
-                   if close_gripper else '单侧肩 pitch 小幅往返，观察正负方向；默认只读，不开闭夹爪。'
-                   if probe else __doc__)
-    result = argparse.ArgumentParser(description=description)
-    result.add_argument('--execute', action='store_true', help='显式执行动作；现场确认空夹爪及运动空间')
-    if not close_gripper:
-        result.add_argument('--leg-seconds', type=float, default=5., help='单程运动时间，5..10 秒，默认 5')
-    result.add_argument('--timeout', type=float, default=5., help='启动/服务/夹爪到位超时，1..10 秒')
-    result.add_argument('--mc-feedback-timeout', type=float, default=.5,
-                        help='MC 状态接收间隔/源时间停滞/源年龄上限，0.2..1 秒，默认 0.5')
-    result.add_argument('--arm-feedback-timeout', type=float, default=.5,
-                        help='观察和执行阶段的手臂反馈时限，0.2..1 秒，默认 0.5')
-    result.add_argument('--hand-feedback-timeout', type=float, default=.5,
-                        help='观察和执行阶段的夹爪反馈时限，0.2..1 秒，默认 0.5')
-    result.add_argument('--log-dir', help='默认写入工作区 log/')
-    if close_gripper:
-        result.add_argument('--side', choices=('left', 'right', 'both'), default='both',
-                            help='控制左、右或两侧夹爪，默认 both；未选侧保持实测开度')
-        result.add_argument('--opening', type=float, default=0.,
-                            help='选定夹爪的目标开度，0..1；0 闭合，1 完全张开，默认 0')
-    elif probe:
-        result.add_argument('--side', choices=('left', 'right'), required=True, help='只验证指定侧肩 pitch')
-        result.add_argument('--delta-deg', type=float, default=1., help='带符号偏移，绝对值 0.5..5 度，默认 1')
-    else:
-        result.add_argument('--left-up-sign', type=int, choices=(-1, 1), default=SHOULDER_UP_SIGNS[0],
-                            help='左肩上抬方向，当前机器人实测默认 -1')
-        result.add_argument('--right-up-sign', type=int, choices=(-1, 1), default=SHOULDER_UP_SIGNS[1],
-                            help='右肩上抬方向，当前机器人实测默认 -1')
+def diagnostic_value(value):
+    """将原始反馈中的非有限数转为可记录字符串；递归保留字典和数组字段。"""
+    if isinstance(value, float) and not math.isfinite(value):
+        return repr(value)
+    if isinstance(value, dict):
+        return {key: diagnostic_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [diagnostic_value(item) for item in value]
+    return value
+
+
+def parser():
+    """创建单次 joint/gripper 命令参数；所有动作默认只读，--execute 才允许发布。"""
+    result = argparse.ArgumentParser(description=__doc__)
+    result.add_argument('action', choices=('joint', 'gripper'), help='关节增量或夹爪开度动作')
+    result.add_argument('--side', choices=('left', 'right', 'both'), required=True, help='选择左、右或双侧')
+    result.add_argument('--tag', choices=JOINT_TAGS, help='joint 动作必须指定的七关节 tag')
+    result.add_argument('--delta-deg', type=float, help='选中侧共用增量，绝对值不超过 10 度')
+    result.add_argument('--left-delta-deg', type=float, help='both 时的左侧增量，与共用增量互斥')
+    result.add_argument('--right-delta-deg', type=float, help='both 时的右侧增量，与共用增量互斥')
+    result.add_argument('--opening', type=float, help='gripper 动作目标开度，0 闭合、1 全开')
+    result.add_argument('--duration', type=float, help='joint 单程时间，5..10 秒，默认 5')
+    result.add_argument('--execute', action='store_true', help='显式执行；现场确认空爪及动作空间')
+    result.add_argument('--timeout', type=float, default=5., help='服务/匹配/夹爪到位超时，1..10 秒')
+    for name in ('mc', 'arm', 'hand'):
+        result.add_argument(f'--{name}-feedback-timeout', type=float, default=.5,
+                            help='接收间隔/源停滞/源年龄上限，0.2..1 秒，默认 0.5')
+    result.add_argument('--log-dir', help='默认使用功能包所在工作区 log/')
     return result
 
 
-def validate_options(options, probe, close_gripper=False):
-    """检查参数并返回左右肩 rad 偏移；夹爪控制返回零偏移，无效参数抛出 TestFailure。"""
+def validate_options(options):
+    """校验动作参数并返回左右 rad 增量（未选侧为 None）；无效或混用参数时抛出 ControlFailure。"""
     if not math.isfinite(options.timeout) or not 1 <= options.timeout <= 10:
-        raise TestFailure('--timeout 必须为 1..10 秒')
-    if not close_gripper and (not math.isfinite(options.leg_seconds) or not 5 <= options.leg_seconds <= 10):
-        raise TestFailure('--leg-seconds 必须为 5..10 秒')
+        raise ControlFailure('--timeout 必须为 1..10 秒')
     for name in ('mc', 'arm', 'hand'):
-        limit = getattr(options, f'{name}_feedback_timeout')
-        if not math.isfinite(limit) or not .2 <= limit <= 1.:
-            raise TestFailure(f'--{name}-feedback-timeout 必须为 0.2..1 秒')
-    if close_gripper:
-        if not math.isfinite(options.opening) or not 0. <= options.opening <= 1.:
-            raise TestFailure('--opening 必须为 0..1 的有限数值（0 闭合，1 完全张开）')
-        return (0., 0.)
-    if probe:
-        if not math.isfinite(options.delta_deg) or not .5 <= abs(options.delta_deg) <= 5:
-            raise TestFailure('--delta-deg 的绝对值必须为 0.5..5 度')
-        delta = math.radians(options.delta_deg)
-        return (delta, 0.) if options.side == 'left' else (0., delta)
-    return tuple(math.radians(5) * sign
-                 for sign in (options.left_up_sign, options.right_up_sign))
+        value = getattr(options, f'{name}_feedback_timeout')
+        if not math.isfinite(value) or not .2 <= value <= 1.:
+            raise ControlFailure(f'--{name}-feedback-timeout 必须为 0.2..1 秒')
+    deltas = (options.delta_deg, options.left_delta_deg, options.right_delta_deg)
+    if options.action == 'gripper':
+        if options.tag is not None or any(v is not None for v in deltas) or options.duration is not None:
+            raise ControlFailure('gripper 不接受 --tag、关节增量或 --duration')
+        if options.opening is None or not math.isfinite(options.opening) or not 0 <= options.opening <= 1:
+            raise ControlFailure('gripper 必须指定 --opening 0..1')
+        return (None, None)
+    if options.tag is None or options.opening is not None:
+        raise ControlFailure('joint 必须指定 --tag，且不能包含 --opening')
+    options.duration = 5. if options.duration is None else options.duration
+    if not math.isfinite(options.duration) or not 5 <= options.duration <= 10:
+        raise ControlFailure('--duration 必须为 5..10 秒')
+    common, left, right = deltas
+    if common is not None:
+        if left is not None or right is not None:
+            raise ControlFailure('--delta-deg 与左右独立增量不能同时使用')
+        selected = (common if options.side in ('left', 'both') else None,
+                    common if options.side in ('right', 'both') else None)
+    else:
+        if options.side != 'both' or left is None or right is None:
+            raise ControlFailure('单侧须指定 --delta-deg；both 须指定共用增量或完整左右独立增量')
+        selected = (left, right)
+    if any(v is not None and (not math.isfinite(v) or abs(v) > 10) for v in selected):
+        raise ControlFailure('单次关节增量必须为有限数值且绝对值不超过 10 度')
+    return tuple(None if v is None else math.radians(v) for v in selected)
 
 
 def accept_mode(response, diagnostics):
     """校验启动时的 GetMcAction 响应；非 URS/RUNNING 时提示用户并失败。"""
     if response is None:
-        raise TestFailure('get_mc_action 未返回响应')
+        raise ControlFailure('get_mc_action 未返回响应')
     action, status = response.info.action_desc, response.info.status.value
     diagnostics.record('mode_response', code=response.header.code, action=action, status=status)
     if response.header.code != 0:
-        raise TestFailure(f'get_mc_action 查询失败，code={response.header.code}')
+        raise ControlFailure(f'get_mc_action 查询失败，code={response.header.code}')
     if action != URS or status != 100:
-        raise TestFailure(f'当前模式为 {action} / status={status}；'
+        raise ControlFailure(f'当前模式为 {action} / status={status}；'
                           '请先手动切换至 URS（UPPERBODY_REMOTE_SPLIT），等待 RUNNING 后重新运行')
 
 
@@ -87,7 +95,7 @@ def confirm_initial_mode(rclpy, node, options, diagnostics, client):
     """用给定客户端在启动时确认 URS；请求每 0.25 秒有界重试。
 
     服务发现和响应各有 options.timeout 秒预算。非 URS、错误响应或 ROS
-    停止时直接抛出 TestFailure，不将其视为可重试的响应超时。
+    停止时直接抛出 ControlFailure，不将其视为可重试的响应超时。
     """
     from aimdk_msgs.srv import GetMcAction
     future = None
@@ -96,16 +104,16 @@ def confirm_initial_mode(rclpy, node, options, diagnostics, client):
     try:
         while not client.service_is_ready():
             if not rclpy.ok():
-                raise TestFailure('ROS 已停止，无法查询 get_mc_action')
+                raise ControlFailure('ROS 已停止，无法查询 get_mc_action')
             if time.monotonic() >= discovery_deadline:
-                raise TestFailure('get_mc_action 服务发现超时')
+                raise ControlFailure('get_mc_action 服务发现超时')
             rclpy.spin_once(node, timeout_sec=.01)
         diagnostics.record('mode_service_ready', discovery_seconds=time.monotonic() - began)
         deadline = time.monotonic() + options.timeout
         attempt = 0
         while time.monotonic() < deadline:
             if not rclpy.ok():
-                raise TestFailure('ROS 已停止，无法查询 get_mc_action')
+                raise ControlFailure('ROS 已停止，无法查询 get_mc_action')
             attempt += 1
             sent = time.monotonic()
             request = GetMcAction.Request()
@@ -115,10 +123,10 @@ def confirm_initial_mode(rclpy, node, options, diagnostics, client):
             attempt_deadline = min(deadline, sent + .25)
             while not future.done() and time.monotonic() < attempt_deadline:
                 if not rclpy.ok():
-                    raise TestFailure('ROS 已停止，无法等待 get_mc_action 响应')
+                    raise ControlFailure('ROS 已停止，无法等待 get_mc_action 响应')
                 rclpy.spin_once(node, timeout_sec=.01)
             if not rclpy.ok():
-                raise TestFailure('ROS 已停止，无法确认 get_mc_action 响应')
+                raise ControlFailure('ROS 已停止，无法确认 get_mc_action 响应')
             if future.done() and time.monotonic() < attempt_deadline:
                 diagnostics.record('mode_query_received', phase='startup', attempt=attempt,
                                     response_seconds=time.monotonic() - sent)
@@ -128,27 +136,82 @@ def confirm_initial_mode(rclpy, node, options, diagnostics, client):
             future = None
             diagnostics.record('mode_query_retry', phase='startup', attempt=attempt,
                                 response_wait_seconds=time.monotonic() - sent)
-        raise TestFailure(f'get_mc_action 响应超时：{options.timeout:g} 秒内已发送 {attempt} 次查询')
+        raise ControlFailure(f'get_mc_action 响应超时：{options.timeout:g} 秒内已发送 {attempt} 次查询')
     finally:
         if future is not None and not future.done():
             client.remove_pending_request(future)
 
 
-class DualArmPort(BaselinePort):
-    """复用原测试反馈与故障锁存，单独实现允许夹爪开闭的 URS 执行流程。"""
+class DualArmPort:
+    """单次动作的 ROS 适配与执行器；不切换模式，不自动返回。"""
 
-    def __init__(self, rclpy, node, options, diagnostics, get_client):
-        """初始化反馈订阅；启动查询客户端保留但不轮询，发布器延迟到显式执行时创建。"""
-        super().__init__(rclpy, node, options, diagnostics, get_client=get_client)
-        self.streams['mc'].decoder = decode_urs_mc
-        # 按流配置观察和执行共用的时限；此时尚未处理任何订阅回调。
+    def __init__(self, rclpy, node, options, diagnostics):
+        """按 SDK QoS 创建只读订阅与各流监视器；发布器延迟至显式执行时创建。"""
+        from aimdk_msgs.msg import JointStateArray, HandStateArray, McCommonState
+        from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+        self.rclpy, self.node, self.options = rclpy, node, options
+        self.diagnostics = diagnostics
+        self.streams = dict(arm=Stream('arm', decode_arm), hand=Stream('hand', decode_hand),
+                            mc=Stream('mc', decode_urs_mc))
         for name, stream in self.streams.items():
-            stream.monitor = FeedbackMonitor(feedback_timeout=getattr(options, f'{name}_feedback_timeout'))
+            stream.monitor = FeedbackMonitor(getattr(options, f'{name}_feedback_timeout'))
         self.publisher = None
         self.command_timer = None
         self.command_target = None
+        self.closed = False
         self.sequence = 0
         self.last_publish = None
+        self.last_log = dict.fromkeys(self.streams, float('-inf'))
+        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT,
+                         durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.subscriptions = [
+            node.create_subscription(JointStateArray, '/aima/hal/joint/arm/state', self.on_arm, qos),
+            node.create_subscription(HandStateArray, '/aima/hal/joint/hand/state', self.on_hand, qos),
+            node.create_subscription(McCommonState, '/aima/mc/common/state', self.on_mc, qos),
+        ]
+
+    def receive(self, name, msg):
+        """解码反馈并记录原始字段及时间；错误永久锁存且立即抛出 ControlFailure。"""
+        from rosidl_runtime_py.convert import message_to_ordereddict
+        now = time.monotonic()
+        stream = self.streams[name]
+        stream.accept(msg, now)
+        if stream.error or now - self.last_log[name] >= .1:
+            self.last_log[name] = now
+            self.diagnostics.record('feedback', stream=name, received_monotonic_s=now,
+                                    ros_time_s=self.node.get_clock().now().nanoseconds / 1e9,
+                                    raw=diagnostic_value(message_to_ordereddict(msg)),
+                                    error=str(stream.error) if stream.error else None)
+        if stream.error:
+            raise ControlFailure(f'{name}: {stream.error}')
+
+    def on_arm(self, msg):
+        """接收一次完整双臂反馈消息并交给具名流。"""
+        self.receive('arm', msg)
+
+    def on_hand(self, msg):
+        """接收一次两侧夹爪反馈消息并交给具名流。"""
+        self.receive('hand', msg)
+
+    def on_mc(self, msg):
+        """接收站立/URS 模式反馈，不解释 FSM 数值。"""
+        self.receive('mc', msg)
+
+    def spin(self):
+        """处理最多 10 ms 回调并观测各流 ROS 时钟；ROS 停止或已锁存错误时抛出 ControlFailure。"""
+        self.rclpy.spin_once(self.node, timeout_sec=.01)
+        if not self.rclpy.ok():
+            raise ControlFailure('ROS context stopped')
+        now, ros_now = time.monotonic(), self.node.get_clock().now().nanoseconds / 1e9
+        for stream in self.streams.values():
+            stream.monitor.observe_clock(now, ros_now)
+            if stream.error:
+                raise ControlFailure(f'{stream.name}: {stream.error}')
+
+    def checked(self):
+        """返回同时满足各自接收与源时间约束的手臂、夹爪和 MC 样本。"""
+        now, ros_now = time.monotonic(), self.node.get_clock().now().nanoseconds / 1e9
+        return {name: stream.checked(now, ros_now) for name, stream in self.streams.items()}
 
     def tick(self, ready=True):
         """处理反馈回调；ready=True 时校验时效，模式变化由 MC 解码器锁存并中止。"""
@@ -161,7 +224,7 @@ class DualArmPort(BaselinePort):
         while not all(s.monitor.latest is not None and s.monitor.latest.stamp > s.first_stamp
                       for s in self.streams.values()):
             if time.monotonic() >= deadline:
-                raise TestFailure('等待双臂、夹爪、MC 的源时间推进超时')
+                raise ControlFailure('等待双臂、夹爪、MC 的源时间推进超时')
             self.tick(ready=False)
         print('URS / RUNNING 已确认；等待 3 秒后记录双臂起点。', flush=True)
         deadline = time.monotonic() + 3.
@@ -187,7 +250,7 @@ class DualArmPort(BaselinePort):
         deadline = time.monotonic() + self.options.timeout
         while self.publisher.get_subscription_count() == 0:
             if time.monotonic() >= deadline:
-                raise TestFailure('上肢命令话题未匹配到 DDS 订阅者；请核查原生 MC 订阅及 QoS')
+                raise ControlFailure('上肢命令话题未匹配到 DDS 订阅者；请核查原生 MC 订阅及 QoS')
             self.tick()
         self.diagnostics.record('command_subscriber_matched',
                                 subscription_count=self.publisher.get_subscription_count())
@@ -197,23 +260,23 @@ class DualArmPort(BaselinePort):
         """保存经校验的完整 rad 目标及左右开度，供定时器发布，不直接发送消息。"""
         check_arm(positions, positions)
         if len(hands) != 2 or not all(math.isfinite(v) and 0 <= v <= 1 for v in hands):
-            raise TestFailure('夹爪目标必须是左右两个 0..1 开度')
+            raise ControlFailure('夹爪目标必须是左右两个 0..1 开度')
         self.command_target = (tuple(positions), tuple(hands))
 
     def publish(self):
         """20 ms 定时回调：检查新鲜反馈及 URS 后，以当前 ROS 时间发送最新目标。
 
-        没有目标时不发布；MC 模式变化、反馈失效或发布间隔超过 80 ms 时抛出 TestFailure。
+        没有目标时不发布；MC 模式变化、反馈失效或发布间隔超过 80 ms 时抛出 ControlFailure。
         """
         if self.command_target is None:
             return
         values = self.checked()
         now = time.monotonic()
         if self.publisher is None:
-            raise TestFailure('缺少上肢命令发布器')
+            raise ControlFailure('缺少上肢命令发布器')
         gap = now - self.last_publish if self.last_publish is not None else None
         if gap is not None and gap > .08:
-            raise TestFailure(f'命令发布间隔 {gap:.3f} 秒超过 0.08 秒')
+            raise ControlFailure(f'命令发布间隔 {gap:.3f} 秒超过 0.08 秒')
         positions, hands = self.command_target
         check_arm(values['arm'].positions, positions)
         msg = self.message_type()
@@ -270,11 +333,11 @@ class DualArmPort(BaselinePort):
             commanded = interpolate(origin, target, now - began, duration) if duration else target
             check_arm(values['arm'].positions, commanded)
             if any(h['state'] not in (0, 1) for h in values['hand'].data['hands']):
-                raise TestFailure('夹爪出现非空闲/移动状态，停止动作')
+                raise ControlFailure('夹爪出现非空闲/移动状态，停止动作')
             if not hand_motion:
                 require_static_hands(values['hand'])
                 if any(abs(a-b) > .02 for a, b in zip(values['hand'].positions, hands)):
-                    raise TestFailure('夹爪保持开度误差超过 0.02')
+                    raise ControlFailure('夹爪保持开度误差超过 0.02')
             self.set_target(commanded, hands)
             if phase_published_at is None and self.sequence > previous_sequence:
                 phase_published_at = self.last_publish
@@ -295,7 +358,7 @@ class DualArmPort(BaselinePort):
                                             arm_tolerance_deg=math.degrees(arm_tolerance),
                                             arm_tolerances_deg=tolerances_deg,
                                             published_count=self.sequence-previous_sequence)
-                    return
+                    return values
                 if now > arrival + settling_timeout:
                     errors = [math.degrees(a-b) for a, b in zip(values['arm'].positions, target)]
                     joints = [f'{name}={error:+.3f}°（上限 ±{limit:g}°）'
@@ -316,118 +379,100 @@ class DualArmPort(BaselinePort):
                     hand_text = '; '.join(f"{h['side']} 开度={h['opening']:.4f}/{h['target']:.4f}, "
                                           f"state={h['state']}, velocity={h['velocity']:.4f}"
                                           for h in hand_states)
-                    raise TestFailure(f'阶段 {phase} 未稳定到位：关节超差 [{", ".join(joints) or "无"}]；'
+                    raise ControlFailure(f'阶段 {phase} 未稳定到位：关节超差 [{", ".join(joints) or "无"}]；'
                                       f'夹爪 [{hand_text}]；新源反馈={newer}；'
                                       f'本阶段已发布 {self.sequence-previous_sequence} 帧；'
                                       f'DDS 订阅匹配数={self.publisher.get_subscription_count()}')
 
-    def control_grippers(self, start, hands, side, opening):
-        """保持完整双臂起点，控制 side 指定夹爪开度；未选侧重发实测开度。
-
-        side 为 left、right 或 both，opening 为已校验的 0..1 目标开度，0 闭合、1 全开。
-        复用阶段执行器，不到位、堵转、故障或反馈失效时中止；不切换模式。
-        """
-        targets = tuple(opening if side in (name, 'both') else current
-                        for name, current in zip(('left', 'right'), hands))
-        self.diagnostics.record('gripper_control_plan', side=side, opening=opening, arm_hold_rad=list(start),
-                                initial_openings=list(hands), target_openings=list(targets))
-        print(f'控制夹爪：{side}；当前开度={list(hands)}，目标开度={list(targets)}；'
-              f'双臂保持实测起点，最多 {self.options.timeout:g} 秒持续发送并等待开度到位。', flush=True)
-        self.enable_commands()
-        self.segment(start, start, targets, 0., ARM_POSITION_TOLERANCE,
-                     hand_motion=True, phase='gripper_control')
-        print('完成：指定夹爪开度到位，双臂位置误差符合 ±3°；模式保持 URS。', flush=True)
-
-    def execute(self, start, hands, offsets, probe):
-        """执行一次往返；正式流程在抬升到位后开爪，保持 3 秒，再闭爪返回。"""
-        peak = shoulder_target(start, offsets)
-        # 执行沿用观察阶段的反馈时限，记录监视器的实际配置。
+    def execute(self, start, target, hand_targets):
+        """发送一次完整目标，等待到位后立即停止发布，再报告实测误差。"""
         self.diagnostics.record('execution_feedback_limits',
-                                arm_timeout_s=self.streams['arm'].monitor.feedback_timeout,
-                                hand_timeout_s=self.streams['hand'].monitor.feedback_timeout,
-                                mc_timeout_s=self.streams['mc'].monitor.feedback_timeout)
+                                **{f'{name}_timeout_s': stream.monitor.feedback_timeout
+                                   for name, stream in self.streams.items()})
         self.enable_commands()
-        # 直接从实测起点开始平滑轨迹，不增加起点精密到位确认阶段。
-        print(f'肩 pitch 偏移（左、右）：{[math.degrees(v) for v in offsets]} 度', flush=True)
-        # 双臂各阶段共用 3 度容差；方向验证另限制为偏移的一半，保证能观察到运动。
-        outbound_tolerance = (min(ARM_POSITION_TOLERANCE, max(abs(value) for value in offsets) / 2)
-                              if probe else ARM_POSITION_TOLERANCE)
-        self.diagnostics.record('execution_position_limits',
-                                tracking_holding_return_tolerance_deg=math.degrees(ARM_POSITION_TOLERANCE),
-                                outbound_tolerance_deg=math.degrees(outbound_tolerance),
-                                endpoint_stable_seconds=.3)
-        self.segment(start, peak, hands, self.options.leg_seconds, outbound_tolerance, phase='raise')
-        if probe:
-            self.segment(peak, peak, hands, 3., ARM_POSITION_TOLERANCE, phase='raised_hold')
-        else:
-            print('双肩到位，打开夹爪；全开到位后保持 3 秒。', flush=True)
-            self.segment(peak, peak, (1., 1.), 0., ARM_POSITION_TOLERANCE, hand_motion=True, phase='open')
-            self.segment(peak, peak, (1., 1.), 3., ARM_POSITION_TOLERANCE, phase='open_hold')
-            print('关闭夹爪，闭合到位后返回双臂初始位置。', flush=True)
-            self.segment(peak, peak, (0., 0.), 0., ARM_POSITION_TOLERANCE, hand_motion=True, phase='close')
-            hands = (0., 0.)
-        self.segment(peak, start, hands, self.options.leg_seconds, ARM_POSITION_TOLERANCE, phase='return')
-        print('完成：双臂返回实测初始位置，误差符合要求；模式保持 URS。', flush=True)
+        hand_motion = self.options.action == 'gripper'
+        values = self.segment(start, target, hand_targets,
+                              0. if hand_motion else self.options.duration,
+                              ARM_POSITION_TOLERANCE, hand_motion=hand_motion,
+                              phase=self.options.action)
+        self.close()
+        # 沿用已验证的 ±3°判定，报告实际运动，避免把容差内通过误称为精确完成小增量。
+        for name, origin, actual, expected in zip(ARM_NAMES, start, values['arm'].positions, target):
+            print(f'{name}: 目标={math.degrees(expected):+.3f}°，'
+                  f'实测={math.degrees(actual):+.3f}°，'
+                  f'实际增量={math.degrees(actual-origin):+.3f}°，'
+                  f'目标误差={math.degrees(actual-expected):+.3f}°', flush=True)
+        print(f'夹爪目标={list(hand_targets)}，实测={list(values["hand"].positions)}', flush=True)
+        print('本次目标在关节 ±3°、夹爪 0.02 容差内确认；'
+              '小增量的通过不证明发生了同等幅度的实际运动。', flush=True)
 
     def close(self):
         """取消发布定时器并清除目标；不执行自动回程或模式切换。"""
+        if self.closed:
+            return
+        self.closed = True
         self.command_target = None
         if self.command_timer is not None:
             self.command_timer.cancel()
         self.diagnostics.record('commands_stopped', published_count=self.sequence)
 
 
-def main(args=None, probe=False, close_gripper=False):
-    """执行双臂、单肩或独立夹爪流程；默认只读，返回成功 0、失败 1、中断 130。"""
-    options = parser(probe, close_gripper).parse_args(args)
+
+def main(args=None):
+    """执行一次命令；默认只读。返回成功 0、失败 1、人工中断 130；不返回起点或切换模式。"""
+    options = parser().parse_args(args)
     diagnostics = node = port = None
     initialized = False
     try:
-        offsets = validate_options(options, probe, close_gripper)
-        prefix = 'gripper_close' if close_gripper else 'shoulder_direction' if probe else 'dual_arm'
-        diagnostics = DiagnosticLog(options.log_dir, prefix=prefix)
-        diagnostics.record('run_start', execute=options.execute, probe=probe, close_gripper=close_gripper,
-                           side=getattr(options, 'side', 'both'), offsets_rad=list(offsets),
-                           opening=getattr(options, 'opening', None),
-                           leg_seconds=getattr(options, 'leg_seconds', None),
-                           mc_feedback_timeout_s=options.mc_feedback_timeout,
-                           arm_feedback_timeout_s=options.arm_feedback_timeout,
-                           hand_feedback_timeout_s=options.hand_feedback_timeout,
-                           runtime_mode_source='/aima/mc/common/state')
+        offsets = validate_options(options)
+        diagnostics = DiagnosticLog(options.log_dir)
+        diagnostics.record('run_start', options=vars(options), offsets_rad=list(offsets))
         print(f'诊断日志：{diagnostics.path}', flush=True)
         import rclpy
         from aimdk_msgs.srv import GetMcAction
         from rclpy.signals import SignalHandlerOptions
         rclpy.init(args=[], signal_handler_options=SignalHandlerOptions.NO)
         initialized = True
-        node = rclpy.create_node('gripper_close' if close_gripper else
-                                 'shoulder_direction_test' if probe else 'dual_arm_control')
+        node = rclpy.create_node('dual_arm_control')
         if node.get_parameter('use_sim_time').value:
-            raise TestFailure('本脚本仅用于真机，不支持 use_sim_time')
+            raise ControlFailure('本脚本仅用于真机，不支持 use_sim_time')
         client = node.create_client(GetMcAction, '/aimdk_5Fmsgs/srv/GetMcAction')
         confirm_initial_mode(rclpy, node, options, diagnostics, client)
         diagnostics.record('runtime_mode_monitor', source='/aima/mc/common/state',
                            required_action=URS, required_status=100)
-        port = DualArmPort(rclpy, node, options, diagnostics, client)
+        port = DualArmPort(rclpy, node, options, diagnostics)
         start, hands = port.capture()
-        if close_gripper:
-            print(f'当前夹爪开度（左、右）：{list(hands)}；'
-                  f'选择侧别：{options.side}，目标开度：{options.opening:g}。', flush=True)
-        if options.execute:
-            if close_gripper:
-                port.control_grippers(start, hands, options.side, options.opening)
-            else:
-                port.execute(start, hands, offsets, probe)
+        target = joint_target(start, options.tag, offsets) if options.action == 'joint' else start
+        hand_targets = (hands if options.action == 'joint'
+                        else gripper_target(hands, options.side, options.opening))
+        diagnostics.record('command_plan', arm_origin_rad=list(start), arm_target_rad=list(target),
+                           hand_origin=list(hands), hand_target=list(hand_targets))
+        if options.action == 'joint':
+            for index, (origin, expected) in enumerate(zip(start, target)):
+                if offsets[index // 7] is not None and index % 7 == JOINT_TAGS.index(options.tag):
+                    print(f'计划 {ARM_NAMES[index]}：{math.degrees(origin):+.3f}° → '
+                          f'{math.degrees(expected):+.3f}°，用时 {options.duration:g} 秒', flush=True)
         else:
-            print('只读检查完成，未发送运动命令；使用 --execute 显式执行。')
+            print(f'夹爪目标（左、右）：{list(hand_targets)}；双臂保持实测起点。', flush=True)
+        if options.execute:
+            port.execute(start, target, hand_targets)
+            port.close()
+            print('本次动作结束，已停止发布；无自动回程或模式切换。'
+                  '停止发布不保证持续保持目标。', flush=True)
+        else:
+            print('只读检查完成，未创建命令发布器；使用 --execute 显式执行。', flush=True)
         diagnostics.record('run_pass', read_only=not options.execute)
         return 0
     except KeyboardInterrupt:
+        if port is not None:
+            port.close()
         if diagnostics:
             diagnostics.record('run_interrupted')
-        print('用户中断；停止发布。请检查机器人状态，停止发布不等于急停。', file=sys.stderr)
+        print('用户中断；停止发布，不自动返回或切换模式。停止发布不等于急停。', file=sys.stderr)
         return 130
     except Exception as error:
+        if port is not None:
+            port.close()
         if diagnostics:
             diagnostics.record('run_failed', error=str(error), error_type=type(error).__name__)
         print(f'失败：{error}。已停止本脚本命令；请检查机器人状态。', file=sys.stderr)

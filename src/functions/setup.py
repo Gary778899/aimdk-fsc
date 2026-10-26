@@ -22,6 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'volume_control = aimdk_functions.volume_control:main',
+            'dual_arm_control = aimdk_functions.dual_arm_control:main',
         ],
     },
 )
