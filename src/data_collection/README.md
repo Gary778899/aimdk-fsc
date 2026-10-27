@@ -12,7 +12,7 @@
 | 双臂 | `/aima/hal/joint/arm/state`／`aimdk_msgs/msg/JointStateArray` | 左右各 7 关节的位置、速度、原始 effort、错误码及整组状态 |
 | 双夹爪 | `/aima/hal/joint/hand/state`／`aimdk_msgs/msg/HandStateArray` | 左右开度、原始速度／effort、运动状态、故障码及手型 |
 
-每侧关节按 `shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_yaw, wrist_pitch, wrist_roll` 输出，输入按名称匹配。关节位置为 rad、速度为 rad/s；夹爪开度为 0～1，0 闭合、1 全开。`effort_raw` 保留 SDK 原值，未核实前不作为真实关节力矩或夹持力使用。
+每侧关节按 `shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_yaw, wrist_pitch, wrist_roll` 输出，输入按名称匹配。关节位置为 rad、速度为 rad/s，双臂 `effort_raw` 为 SDK 原始力矩值，单位为 Nm（N·m），映射保持 `scale=1`、`offset=0`。依据为随 SDK 提供的[关节控制文档中 JointState 定义](../../docs/cn/_build/html/zh-cn/dev/Interface/control_mod/joint_control.html#rosmsg-jointstate)。夹爪开度为 0～1，0 闭合、1 全开；夹爪 `effort_raw` 仍保留厂商归一化原值（`vendor_normalized`），不按 Nm 或实际夹持力解释。
 
 采样取各来源最近已收到的状态，不插值；保留各流源时间、接收时间、源序号、frame_id、接收年龄及复用标记。缺失或非有限字段用 `null` 和问题标记表示，故障反馈仍保留。50 Hz 是统一帧的目标生成频率，不保证每帧都有新的来源数据，也不代表硬件同步。
 

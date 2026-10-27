@@ -83,7 +83,7 @@
           "path": "effort",
           "scale": 1,
           "offset": 0,
-          "unit": "unknown"
+          "unit": "Nm"
         },
         "error_code": {
           "path": "error_code",
@@ -123,7 +123,7 @@
           "path": "effort",
           "scale": 1,
           "offset": 0,
-          "unit": "unknown"
+          "unit": "Nm"
         },
         "error_code": {
           "path": "error_code",
