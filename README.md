@@ -12,7 +12,7 @@
 当前目标为 `agi@10.0.1.41:/home/agi/aimdk-fsc/`，具体连接与参数以
 [.vscode/tasks.json](.vscode/tasks.json) 为准。
 两个任务均使用 `--delete`，清理目标目录内本地已不存在且未被排除规则保护的内容。
-保留现有排除项，不使用 `--delete-excluded`；`data/`、`log/`、`exports/`
+保留现有排除项，不使用 `--delete-excluded`；`data/`、`log/`、`exports/`、根目录的 `docs/`
 已排除，不会随代码推送。受排除保护的旧构建和安装产物也不会因推送自动清理。
 
 ### 2. 容器内构建与验证
@@ -46,8 +46,10 @@ colcon 构建范围显式限定 `--base-paths src`，避免纳入 `extra/` 中�
 确认所需数据和日志已下载并核对，且没有自研节点继续使用相关目录后，
 在本地项目根目录使用下文的清理命令：先预览，核对后再添加 `--execute` 实际清理。
 
-脚本通过 SSH 在机器人宿主机清空 `/home/agi/aimdk-fsc` 和 `/home/agi/data-fsc`
-的全部内容，包括隐藏文件及项目的 `build/`、`install/`、`log/`，保留两个根目录及权限。
+脚本默认通过 SSH 在机器人宿主机清空 `/home/agi/data-fsc` 和 `/home/agi/aimdk-fsc/log`
+的全部内容，包括隐藏文件，保留目录本身及权限。
+添加 `--all` 时清理上述两处及整个 `/home/agi/aimdk-fsc`，包括源码、`build/`、`install/`
+等内容；保留项目和数据根目录，项目内的 `log/` 目录也会被删除。
 绑定挂载使清理结果同时反映到容器内，无需进入、停止或删除容器。
 
 下载与清理独立运行；脚本不检查下载结果、不停止节点、不自动使用 sudo。
@@ -55,8 +57,9 @@ colcon 构建范围显式限定 `--base-paths src`，避免纳入 `extra/` 中�
 
 ### 5. 下次使用
 
-保留现有容器及挂载配置时，下次通电后重新同步代码，再在开发容器内重新构建 ROS 项目，
-然后启动自研节点。清理已删除构建产物，不能只同步代码便直接运行；通常无需重新构建镜像或重新创建容器。
+保留现有容器及挂载配置时，默认清理后可继续使用现有代码和构建产物。
+如果使用了 `--all`，下次需重新同步代码，再在开发容器内重新构建 ROS 项目，
+然后启动自研节点；通常无需重新构建镜像或重新创建容器。
 
 连接地址变更时，同时更新 `.vscode/tasks.json` 和 `scripts/robot_cleanup.py`。
 
@@ -64,10 +67,10 @@ colcon 构建范围显式限定 `--base-paths src`，避免纳入 `extra/` 中�
 
 ### 进入开发容器
 
-在机器人宿主机执行；当前记录的容器名为 `aimdk-dev`。
+在机器人宿主机执行；当前记录的容器名为 `aimdk-dev-fsc`。
 
 ```bash
-podman exec -it aimdk-dev bash
+podman exec -it aimdk-dev-fsc bash
 ```
 
 ### 预览机器人目录清理
@@ -84,4 +87,11 @@ python3 scripts/robot_cleanup.py
 
 ```bash
 python3 scripts/robot_cleanup.py --execute
+```
+
+如需同时清空整个项目目录，先预览全部范围，再执行：
+
+```bash
+python3 scripts/robot_cleanup.py --all
+python3 scripts/robot_cleanup.py --all --execute
 ```
