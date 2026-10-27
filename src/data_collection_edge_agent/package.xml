@@ -2,29 +2,29 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>data_collection_edge_agent</name>
-  <version>0.1.0</version>
-  <description>Out-of-band ZMQ controlled edge data logger for high-frequency ROS 2 sensor data.</description>
+  <version>0.2.0</version>
+  <description>Independent JSON-mapped dual-arm and gripper state collector with 50 Hz frames.</description>
   <maintainer email="gary@example.com">gary</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-
   <depend>rmw</depend>
   <depend>rclcpp</depend>
-  <depend>sensor_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>aimdk_msgs</depend>
+  <depend>nlohmann-json-dev</depend>
   <depend>rosbag2_cpp</depend>
   <depend>rosbag2_storage</depend>
   <depend>mcap_vendor</depend>
-
   <build_depend>pkg-config</build_depend>
+  <!-- Ubuntu 22.04 的 libzmq3-dev 同时提供 libzmq.pc 和 zmq.hpp；CMake 仍检查头文件。 -->
   <depend>libzmq3-dev</depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
-  <exec_depend>locomotion_wrapper</exec_depend>
   <exec_depend>rosbag2_storage_mcap</exec_depend>
-
+  <exec_depend>python3-zmq</exec_depend>
   <export>
     <build_type>ament_cmake</build_type>
   </export>

@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "platform": "agibot_x2",
+  "sample_rate_hz": 50,
+  "joint_order": [
+    "shoulder_pitch",
+    "shoulder_roll",
+    "shoulder_yaw",
+    "elbow",
+    "wrist_yaw",
+    "wrist_pitch",
+    "wrist_roll"
+  ],
+  "streams": [
+    {
+      "id": "arms",
+      "topic": "/aima/hal/joint/arm/state",
+      "message_type": "aimdk_msgs/msg/JointStateArray",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 10
+      },
+      "timestamps": {
+        "stamp": "header.stamp",
+        "meas_stamp": "header.meas_stamp",
+        "sequence": "header.sequence"
+      },
+      "state_path": "state.value",
+      "frame_id_path": "header.frame_id"
+    },
+    {
+      "id": "hands",
+      "frame_id_path": "header.frame_id",
+      "topic": "/aima/hal/joint/hand/state",
+      "message_type": "aimdk_msgs/msg/HandStateArray",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 10
+      },
+      "timestamps": {
+        "stamp": "header.stamp",
+        "meas_stamp": "header.meas_stamp",
+        "sequence": "header.sequence"
+      }
+    }
+  ],
+  "arms": {
+    "left": {
+      "joint_fields": {
+        "shoulder_pitch": {
+          "position": {"path": "position", "scale": 1, "offset": 0, "unit": "rad"},
+          "velocity": {"path": "velocity", "scale": 1, "offset": 0, "unit": "rad/s"}
+        }
+      },
+      "stream": "arms",
+      "array": "joints",
+      "name_field": "name",
+      "names": [
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_yaw_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_roll_joint"
+      ],
+      "fields": {
+        "position": {
+          "path": "position",
+          "scale": 1,
+          "offset": 0,
+          "unit": "rad"
+        },
+        "velocity": {
+          "path": "velocity",
+          "scale": 1,
+          "offset": 0,
+          "unit": "rad/s"
+        },
+        "effort_raw": {
+          "path": "effort",
+          "scale": 1,
+          "offset": 0,
+          "unit": "unknown"
+        },
+        "error_code": {
+          "path": "error_code",
+          "scale": 1,
+          "offset": 0,
+          "unit": "code"
+        }
+      }
+    },
+    "right": {
+      "stream": "arms",
+      "array": "joints",
+      "name_field": "name",
+      "names": [
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_yaw_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_roll_joint"
+      ],
+      "fields": {
+        "position": {
+          "path": "position",
+          "scale": 1,
+          "offset": 0,
+          "unit": "rad"
+        },
+        "velocity": {
+          "path": "velocity",
+          "scale": 1,
+          "offset": 0,
+          "unit": "rad/s"
+        },
+        "effort_raw": {
+          "path": "effort",
+          "scale": 1,
+          "offset": 0,
+          "unit": "unknown"
+        },
+        "error_code": {
+          "path": "error_code",
+          "scale": 1,
+          "offset": 0,
+          "unit": "code"
+        }
+      }
+    }
+  },
+  "grippers": {
+    "left": {
+      "stream": "hands",
+      "array": "left_hands",
+      "name_field": "name",
+      "name": "left_claw_joint",
+      "type_path": "left_hand_type.value",
+      "expected_type": 2,
+      "fields": {
+        "opening": {
+          "path": "position",
+          "scale": 1,
+          "offset": 0,
+          "unit": "normalized_opening"
+        },
+        "velocity_raw": {
+          "path": "velocity",
+          "scale": 1,
+          "offset": 0,
+          "unit": "vendor_normalized"
+        },
+        "effort_raw": {
+          "path": "effort",
+          "scale": 1,
+          "offset": 0,
+          "unit": "vendor_normalized"
+        },
+        "state": {
+          "path": "state",
+          "scale": 1,
+          "offset": 0,
+          "unit": "code"
+        },
+        "faultcode": {
+          "path": "faultcode",
+          "scale": 1,
+          "offset": 0,
+          "unit": "code"
+        }
+      }
+    },
+    "right": {
+      "stream": "hands",
+      "array": "right_hands",
+      "name_field": "name",
+      "name": "right_claw_joint",
+      "type_path": "right_hand_type.value",
+      "expected_type": 2,
+      "fields": {
+        "opening": {
+          "path": "position",
+          "scale": 1,
+          "offset": 0,
+          "unit": "normalized_opening"
+        },
+        "velocity_raw": {
+          "path": "velocity",
+          "scale": 1,
+          "offset": 0,
+          "unit": "vendor_normalized"
+        },
+        "effort_raw": {
+          "path": "effort",
+          "scale": 1,
+          "offset": 0,
+          "unit": "vendor_normalized"
+        },
+        "state": {
+          "path": "state",
+          "scale": 1,
+          "offset": 0,
+          "unit": "code"
+        },
+        "faultcode": {
+          "path": "faultcode",
+          "scale": 1,
+          "offset": 0,
+          "unit": "code"
+        }
+      }
+    }
+  }
+}
