@@ -1,4 +1,4 @@
-#include "data_collection_edge_agent/data_collection_edge_agent_node.hpp"
+#include "data_collection/data_collection_node.hpp"
 
 #include <chrono>
 #include <cctype>
@@ -19,7 +19,7 @@
 #define DATA_COLLECTION_CODE_VERSION "unknown"
 #endif
 
-namespace data_collection_edge_agent
+namespace data_collection
 {
 namespace
 {
@@ -133,8 +133,8 @@ std::shared_ptr<rclcpp::SerializedMessage> serialize_raw(const Message & message
 
 }  // namespace
 
-DataCollectionEdgeAgentNode::DataCollectionEdgeAgentNode(const rclcpp::NodeOptions & options)
-: Node("data_collection_edge_agent_node", options)
+DataCollectionNode::DataCollectionNode(const rclcpp::NodeOptions & options)
+: Node("data_collection_node", options)
 {
   const auto mapping_file = declare_parameter<std::string>("mapping_file", "");
   const auto data_root = declare_parameter<std::string>("data_root", "");
@@ -176,10 +176,10 @@ DataCollectionEdgeAgentNode::DataCollectionEdgeAgentNode(const rclcpp::NodeOptio
   writer_ = std::make_unique<SessionWriter>(
     mapping_, data_root, record_raw_, static_cast<std::size_t>(queue_capacity), metadata);
   create_inputs();
-  sample_timer_ = create_wall_timer(period, std::bind(&DataCollectionEdgeAgentNode::sample, this));
+  sample_timer_ = create_wall_timer(period, std::bind(&DataCollectionNode::sample, this));
   zmq_bind_endpoint_ = "tcp://" + bind_address + ":" + std::to_string(port);
   auto ready = zmq_ready_.get_future();
-  zmq_thread_ = std::thread(&DataCollectionEdgeAgentNode::zmq_server_loop, this);
+  zmq_thread_ = std::thread(&DataCollectionNode::zmq_server_loop, this);
   try {
     ready.get();
   } catch (...) {
@@ -191,7 +191,7 @@ DataCollectionEdgeAgentNode::DataCollectionEdgeAgentNode(const rclcpp::NodeOptio
     sample_rate_hz_, zmq_bind_endpoint_.c_str(), record_raw_ ? "enabled" : "disabled");
 }
 
-DataCollectionEdgeAgentNode::~DataCollectionEdgeAgentNode()
+DataCollectionNode::~DataCollectionNode()
 {
   shutdown_requested_.store(true);
   if (sample_timer_) {
@@ -207,7 +207,7 @@ DataCollectionEdgeAgentNode::~DataCollectionEdgeAgentNode()
   }
 }
 
-void DataCollectionEdgeAgentNode::create_inputs()
+void DataCollectionNode::create_inputs()
 {
   for (const auto & stream : mapping_.at("streams")) {
     const auto type = stream.at("message_type").get<std::string>();
@@ -235,7 +235,7 @@ void DataCollectionEdgeAgentNode::create_inputs()
   }
 }
 
-DataCollectionEdgeAgentNode::ReceiveContext DataCollectionEdgeAgentNode::receive_context()
+DataCollectionNode::ReceiveContext DataCollectionNode::receive_context()
 {
   // 时间在回调入口捕获，磁盘线程不得重写接收时间。
   const auto entry_generation = generation_.load();
@@ -246,7 +246,7 @@ DataCollectionEdgeAgentNode::ReceiveContext DataCollectionEdgeAgentNode::receive
     entry_generation, received_ros, received_monotonic};
 }
 
-void DataCollectionEdgeAgentNode::on_arm(
+void DataCollectionNode::on_arm(
   const Json & stream, aimdk_msgs::msg::JointStateArray::SharedPtr message)
 {
   const auto context = receive_context();
@@ -260,7 +260,7 @@ void DataCollectionEdgeAgentNode::on_arm(
   }
 }
 
-void DataCollectionEdgeAgentNode::on_hand(
+void DataCollectionNode::on_hand(
   const Json & stream, aimdk_msgs::msg::HandStateArray::SharedPtr message)
 {
   const auto context = receive_context();
@@ -274,7 +274,7 @@ void DataCollectionEdgeAgentNode::on_hand(
   }
 }
 
-void DataCollectionEdgeAgentNode::accept_message(
+void DataCollectionNode::accept_message(
   const Json & stream, const Json & message,
   std::shared_ptr<rclcpp::SerializedMessage> serialized, const ReceiveContext & context)
 {
@@ -289,7 +289,7 @@ void DataCollectionEdgeAgentNode::accept_message(
   }
 }
 
-void DataCollectionEdgeAgentNode::sample()
+void DataCollectionNode::sample()
 {
   uint64_t generation = 0;
   try {
@@ -306,7 +306,7 @@ void DataCollectionEdgeAgentNode::sample()
   }
 }
 
-void DataCollectionEdgeAgentNode::fail_session(const std::string & reason, uint64_t generation)
+void DataCollectionNode::fail_session(const std::string & reason, uint64_t generation)
 {
   std::lock_guard<std::mutex> control_lock(control_mutex_);
   {
@@ -322,7 +322,7 @@ void DataCollectionEdgeAgentNode::fail_session(const std::string & reason, uint6
   RCLCPP_ERROR(get_logger(), "Session input/sampling failed: %s", reason.c_str());
 }
 
-void DataCollectionEdgeAgentNode::start_recording()
+void DataCollectionNode::start_recording()
 {
   std::lock_guard<std::mutex> control_lock(control_mutex_);
   if (writer_->is_recording()) {
@@ -346,7 +346,7 @@ void DataCollectionEdgeAgentNode::start_recording()
   RCLCPP_INFO(get_logger(), "Recording started: %s", path.c_str());
 }
 
-void DataCollectionEdgeAgentNode::stop_recording()
+void DataCollectionNode::stop_recording()
 {
   std::lock_guard<std::mutex> control_lock(control_mutex_);
   const bool already_closed = writer_->status().at("closed").get<bool>();
@@ -369,7 +369,7 @@ void DataCollectionEdgeAgentNode::stop_recording()
     summary.at("data_complete").get<bool>() ? "true" : "false");
 }
 
-Json DataCollectionEdgeAgentNode::status()
+Json DataCollectionNode::status()
 {
   auto result = writer_->status();
   std::lock_guard<std::mutex> lock(state_mutex_);
@@ -380,7 +380,7 @@ Json DataCollectionEdgeAgentNode::status()
   return result;
 }
 
-void DataCollectionEdgeAgentNode::zmq_server_loop()
+void DataCollectionNode::zmq_server_loop()
 {
   bool ready = false;
   try {
@@ -455,7 +455,7 @@ void DataCollectionEdgeAgentNode::zmq_server_loop()
   }
 }
 
-std::string DataCollectionEdgeAgentNode::normalize_command(std::string command)
+std::string DataCollectionNode::normalize_command(std::string command)
 {
   const auto first = command.find_first_not_of(" \t\r\n");
   if (first == std::string::npos) {
@@ -468,7 +468,7 @@ std::string DataCollectionEdgeAgentNode::normalize_command(std::string command)
   return command;
 }
 
-}  // namespace data_collection_edge_agent
+}  // namespace data_collection
 
 /** @brief 初始化 ROS 并运行独立采集节点，构造或执行失败时返回非零。
  * @param argc 参数数量。 @param argv ROS 参数。 @return 正常为 0，错误为 1。
@@ -477,13 +477,13 @@ int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   try {
-    auto node = std::make_shared<data_collection_edge_agent::DataCollectionEdgeAgentNode>();
+    auto node = std::make_shared<data_collection::DataCollectionNode>();
     rclcpp::spin(node);
     node.reset();
     rclcpp::shutdown();
     return 0;
   } catch (const std::exception & error) {
-    RCLCPP_FATAL(rclcpp::get_logger("data_collection_edge_agent"), "%s", error.what());
+    RCLCPP_FATAL(rclcpp::get_logger("data_collection"), "%s", error.what());
     rclcpp::shutdown();
     return 1;
   }

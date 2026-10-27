@@ -13,22 +13,22 @@
 #include <aimdk_msgs/msg/joint_state_array.hpp>
 #include <rclcpp/rclcpp.hpp>
 
-#include "data_collection_edge_agent/session_writer.hpp"
-#include "data_collection_edge_agent/state_mapper.hpp"
+#include "data_collection/session_writer.hpp"
+#include "data_collection/state_mapper.hpp"
 
-namespace data_collection_edge_agent
+namespace data_collection
 {
 
 /** @brief 独立订阅 SDK 双臂和夹爪状态，按固定频率生成统一采集帧。 */
-class DataCollectionEdgeAgentNode : public rclcpp::Node
+class DataCollectionNode : public rclcpp::Node
 {
 public:
   /** @brief 加载映射并创建订阅、采样定时器及控制端口；配置或绑定失败抛出异常。
    * @param options ROS 节点选项及参数覆盖。
    */
-  explicit DataCollectionEdgeAgentNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  explicit DataCollectionNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
   /** @brief 停止控制线程并尝试排空当前会话，错误记录到日志。 */
-  ~DataCollectionEdgeAgentNode() override;
+  ~DataCollectionNode() override;
 
 private:
   /** @brief 保存一次回调所属会话及入口接收时间，防止跨会话写入。 */
@@ -96,4 +96,4 @@ private:
   std::promise<void> zmq_ready_;
 };
 
-}  // namespace data_collection_edge_agent
+}  // namespace data_collection

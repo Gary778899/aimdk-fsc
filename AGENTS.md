@@ -35,7 +35,7 @@
 | 自研实验工具 | `src/test/` → `aimdk_test` | 头部、手臂诊断与运动实验。入口为 `aimdk_test/head_test.py`、`arm_test.py`；`*_core.py` 为无 ROS 导入的校验／算法核心，`arm_test_motion.py` 为手臂 ROS 执行适配，`head_test_diagnostics.py` 提供实验 JSONL 日志。这里的 `test` 是业务包目录，不是全工作区单元测试目录。 |
 | 自研功能命令 | `src/functions/` → `aimdk_functions` | 独立实用功能：`volume_control.py`（音量／静音）、`dual_arm_control.py`（URS 下单次关节增量／夹爪开度）。双臂纯计算与反馈校验在 `dual_arm_control_core.py`，日志在 `dual_arm_control_diagnostics.py`；不依赖测试包，也不作为所有公共代码的汇总包。 |
 | 自研只读观测 | `src/locomotion_wrapper/` → `locomotion_wrapper` | 厂商关节状态聚合与标准 IMU 校验转发，不含运动控制或策略推理。节点在 `src/hardware_wrapper_node.cpp`，纯校验在 `include/locomotion_wrapper/state_validation.hpp`，配置在 `config/`，启动在 `launch/`，校验测试在 `test/`；`joint_watch.py` 仅监视标准关节状态。 |
-| 自研数据采集 | `src/data_collection_edge_agent/` → `data_collection_edge_agent` | 订阅标准 `JointState`／`Imu` 并录制 MCAP，通过 ZeroMQ START／STOP 控制录制。节点在 `src/data_collection_edge_agent_node.cpp`；`launch/data_collection_edge_agent.launch.py` 单独启动采集器，`robot_data_collection.launch.py` 当前组合启动观测包与采集器。 |
+| 自研数据采集 | `src/data_collection/` → `data_collection` | 独立订阅 SDK 双臂／夹爪反馈，生成统一 JSONL 帧并可选录制原始 MCAP，通过 ZeroMQ START／STOP／STATUS 控制录制。节点在 `src/data_collection_node.cpp`；`launch/data_collection.launch.py` 单独启动采集器，`robot_data_collection.launch.py` 为同包内的启动别名。 |
 
 新增 `aimdk_test`／`aimdk_functions` 命令时，将模块放在相应 Python 包中，在各自 `setup.py` 的 `console_scripts` 注册，并在 `package.xml` 声明依赖；命令使用 ROS 2 包名，而非外层目录名，如 `ros2 run aimdk_test arm_test`。
 
@@ -60,9 +60,9 @@
 
 ### 观测与采集语义
 
-- 观测包保持只读，采集器不触发运动、不切换模式、不承担厂商关节映射。当前采集器只支持标准 `JointState`／`Imu`，改话题参数不会改变消息类型，也不能因此直接录制厂商反馈。现有联合 launch 仍依赖观测包；未来拆分组合层时，配套迁移 launch 与 manifest，不能只删除依赖。依据：[包边界评审](docs/task_2_package_review.md)。
+- 观测包保持只读；采集器不触发运动、不切换模式，独立订阅 SDK 的 `JointStateArray`／`HandStateArray`，由 JSON 配置映射双臂与夹爪字段，不依赖观测包。改变话题或消息类型字符串不能自动支持其他消息结构；`robot_data_collection.launch.py` 当前仅为独立采集入口别名。包名已由 `data_collection_edge_agent` 改为 `data_collection`，同步后需核查旧安装产物与 overlay 来源，再在容器构建验证。依据：[采集说明与迁移步骤](src/data_collection/README.md)。
 - `config/wbc_observer.yaml` 当前为腿部／胸部 IMU profile；上肢采集须配置真实输入话题和核实过的完整关节名称集合，不能只打开 `require_arm`。`expected_names` 当前约束集合而不保证输出顺序，消费者按 `name` 映射；胸部与 torso IMU 不默认等价。聚合使用最早源时间，MCAP 存储时间为节点接收时间，两者不等同于硬件同步；标准消息也不能替代原始厂商错误、夹爪、模式和命令记录。依据：[观测与数据边界评审](docs/task_2_package_review.md)。
-- ZeroMQ `START` 的 `ACK` 只表示 writer 初始化成功，不证明已收到有效样本；录制成功需结合实际数据及读回验证。录包目录显式选择已确认的持久化位置；当前工作区内 `rosbags/` 未受同步排除保护，不能直接假定安全。若要使用该目录，先为预览和推送同时配置保护性排除；保留现有同步规则，除非任务明确要求调整。依据：[采集说明](src/data_collection_edge_agent/README.md)、[数据与同步评审](docs/task_2_package_review.md#6-同步构建与版本追溯)、`.vscode/tasks.json`。
+- ZeroMQ `START` 的 `ACK` 只表示 writer 初始化成功，不证明已收到有效样本；录制成功需结合实际数据及读回验证。录包目录显式选择已确认的持久化位置；当前工作区内 `rosbags/` 未受同步排除保护，不能直接假定安全。若要使用该目录，先为预览和推送同时配置保护性排除；保留现有同步规则，除非任务明确要求调整。依据：[采集说明](src/data_collection/README.md)、[数据与同步评审](docs/task_2_package_review.md#6-同步构建与版本追溯)、`.vscode/tasks.json`。
 
 
 ## 同步配置

@@ -6,7 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace data_collection_edge_agent
+namespace data_collection
 {
 
 using Json = nlohmann::json;
@@ -67,4 +67,4 @@ private:
   std::map<std::string, Cache> caches_;
 };
 
-}  // namespace data_collection_edge_agent
+}  // namespace data_collection

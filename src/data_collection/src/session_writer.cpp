@@ -1,4 +1,4 @@
-#include "data_collection_edge_agent/session_writer.hpp"
+#include "data_collection/session_writer.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -19,7 +19,7 @@
 #include <rosbag2_cpp/writer.hpp>
 #include <rosbag2_storage/topic_metadata.hpp>
 
-namespace data_collection_edge_agent
+namespace data_collection
 {
 namespace
 {
@@ -606,4 +606,4 @@ void SessionWriter::fail(const std::string & reason)
   impl_->fail(reason);
 }
 
-}  // namespace data_collection_edge_agent
+}  // namespace data_collection

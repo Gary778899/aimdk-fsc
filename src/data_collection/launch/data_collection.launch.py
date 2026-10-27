@@ -12,7 +12,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     """声明映射、持久化目录与控制参数，返回独立采集节点的启动描述。"""
     default_mapping = (
-        Path(get_package_share_directory('data_collection_edge_agent'))
+        Path(get_package_share_directory('data_collection'))
         / 'config' / 'x2_upper_body.json'
     )
     arguments = [
@@ -35,9 +35,9 @@ def generate_launch_description():
         DeclareLaunchArgument('firmware', default_value='unknown', description='机器人固件版本。'),
     ]
     node = Node(
-        package='data_collection_edge_agent',
-        executable='data_collection_edge_agent_node',
-        name='data_collection_edge_agent_node',
+        package='data_collection',
+        executable='data_collection_node',
+        name='data_collection_node',
         output='screen',
         parameters=[{
             'data_root': ParameterValue(LaunchConfiguration('data_root'), value_type=str),

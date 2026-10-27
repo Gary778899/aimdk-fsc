@@ -10,8 +10,8 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 def generate_launch_description():
     """返回只包含独立采集启动文件的兼容描述，data_root 仍为必填参数。"""
     recorder = (
-        Path(get_package_share_directory('data_collection_edge_agent'))
-        / 'launch' / 'data_collection_edge_agent.launch.py'
+        Path(get_package_share_directory('data_collection'))
+        / 'launch' / 'data_collection.launch.py'
     )
     return LaunchDescription([
         IncludeLaunchDescription(PythonLaunchDescriptionSource(str(recorder))),

@@ -1,4 +1,4 @@
-#include "data_collection_edge_agent/state_mapper.hpp"
+#include "data_collection/state_mapper.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-namespace data_collection_edge_agent
+namespace data_collection
 {
 namespace
 {
@@ -553,4 +553,4 @@ const Json & StateMapper::config() const
   return config_;
 }
 
-}  // namespace data_collection_edge_agent
+}  // namespace data_collection

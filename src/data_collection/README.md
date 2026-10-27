@@ -1,4 +1,4 @@
-# data_collection_edge_agent 使用说明
+# data_collection 使用说明
 
 当前包版本：`0.2.0`。目标环境为机器人开发板的 Ubuntu 22.04／ROS 2 Humble 容器。
 2026-10-26 用户已在机器人容器完成一次录制；下载数据本地读回共 12,869 帧，实际平均输出 50.002 Hz，正常收尾、无统一帧写盘丢弃，双臂字段有效，但夹爪因名称映射不符全程缺失。随后用户实际反馈确认名称为 `left_claw_joint`／`right_claw_joint`，已据此修正默认映射并补充停止日志；这两项修改仅完成本地静态检查，仍待同步后在容器复验。两路测量时间戳为零、手部源序号为零的问题仍保留质量标记，不能据此认定完整数据验收通过。
@@ -107,7 +107,7 @@ dpkg-query -W -f='${binary:Package}\t${Status}\t${Version}\n' \
 
 ```bash
 source /opt/ros/humble/setup.bash
-colcon build --base-paths src --packages-up-to data_collection_edge_agent
+colcon build --base-paths src --packages-up-to data_collection
 source install/setup.bash
 ```
 
@@ -118,17 +118,17 @@ CMake 只检查依赖，不自动下载或安装。沿用 SDK 的消息与预编
 先选择容器内**已确认持久化、可写、位于同步工作区之外**的数据根目录。下面的 `/ABSOLUTE/PERSISTENT/DATA_DIR` 是占位符，必须替换为实际绝对路径。当前 rsync 使用 `--delete`，工作区内的 `rosbags/` 未受同步排除保护。
 
 ```bash
-ros2 launch data_collection_edge_agent data_collection_edge_agent.launch.py \
+ros2 launch data_collection data_collection.launch.py \
   data_root:=/home/agi/data-fsc
 ```
 
 节点启动后等待控制指令，不自动录制。在同一容器的另一个终端加载相同 ROS／工作区环境，再执行：
 
 ```bash
-ros2 run data_collection_edge_agent collection_control START
-ros2 run data_collection_edge_agent collection_control STATUS
+ros2 run data_collection collection_control START
+ros2 run data_collection collection_control STATUS
 # 完成采集后停止并等待文件关闭。
-ros2 run data_collection_edge_agent collection_control STOP
+ros2 run data_collection collection_control STOP
 ```
 
 控制客户端使用 `#!/usr/bin/env python3`，因此实际解释器由该终端的 `PATH` 决定。若提示无法导入 `zmq`，在同一容器内安装 `python3-zmq`，再检查 `python3 -c 'import sys, zmq; print(sys.executable); print(zmq.__version__)'`。若系统包已安装但仍失败，可用 `/usr/bin/python3` 执行同一检查，区分系统包缺失与虚拟环境／其他 Python 解释器的路径差异。新版客户端会显示解释器路径及原始导入异常；此类导入失败发生在发送请求前，START 尚未发送，无需因此重启已就绪的采集节点。
@@ -163,12 +163,38 @@ STOP 成功排空队列、关闭文件并写入摘要后，节点终端输出 `R
 STOP 后，将 STATUS 返回的实际 `session_dir` 代入；下方 `/ABSOLUTE/SESSION_DIR` 也是占位符：
 
 ```bash
-ros2 run data_collection_edge_agent inspect_collection /ABSOLUTE/SESSION_DIR
+ros2 run data_collection inspect_collection /ABSOLUTE/SESSION_DIR
 ```
 
 工具输出 JSON 报告，核对帧结构、关节顺序、时间推进与会话计数，并统计实际输出频率、采样间隔、来源复用、缺失、无效数据和故障。退出码：`0` 表示按当前规则数据完整，`1` 表示质量不完整或未正常收尾，`2` 表示文件损坏、摘要矛盾或读取失败。
 
 `complete` 表示会话已正常关闭且没有存储错误，`data_complete` 还检查无数据、缺流、无效字段、已观察异常及记录丢弃。仍应结合实际频率、复用比例与接收年龄判断可用性，不能据此认定有 50 Hz 的独立新样本。未收尾会话会报告实际可读数据及摘要差异；当前工具**不验证原始 MCAP 内容**。本版本不提供 CSV 导出或动作回放。
+
+## 包名迁移
+
+采集包由 `data_collection_edge_agent` 重命名为 `data_collection`，源码目录为
+`src/data_collection/`。主启动文件为 `data_collection.launch.py`，节点可执行文件与
+默认节点名均为 `data_collection_node`；C++ 头文件前缀及命名空间改为
+`data_collection`，节点类改为 `DataCollectionNode`。
+`robot_data_collection.launch.py` 继续作为新包内的启动别名。
+旧包名和 `data_collection_edge_agent.launch.py` 不再提供兼容入口；外部脚本中的
+`ros2 run`、`ros2 launch`、包资源查询及节点名引用须同步更新。
+本次只调整名称，录制参数、ZMQ 协议、映射与数据格式保持不变，已有采集数据无需迁移。
+
+同步后在机器人容器内完成以下步骤：
+
+1. 停止仍在运行的旧采集节点，确认录制已正常收尾。
+2. 核对容器实际构建／安装目录、overlay 加载顺序和旧包来源。现有 rsync 排除规则保护
+   构建及安装产物，源码改名不会自动移除旧包；确认后定向清理旧包产物。
+   若为合并安装布局，不能把整个共享安装目录当作旧包目录删除。
+3. 在未加载旧工作区 overlay 的终端加载 SDK／Humble 环境，按本文命令构建新包，
+   再加载实际安装目录的 `setup.bash`。若使用自定义构建／安装目录，保留相应参数。
+4. 用 `ros2 pkg prefix data_collection`、`ros2 pkg executables data_collection` 核对新包来源
+   及三个可执行入口；用 `ros2 pkg prefix data_collection_edge_agent` 排查残留旧包。
+5. 使用新入口录制、停止并读回一次数据，确认映射加载和文件收尾；若使用启动别名，
+   同时验证该入口。改名前的验证结果不能替代改名后的容器构建与运行验证。
+
+此次重命名仅完成本地静态检查，尚未完成机器人容器内的构建与运行验证。
 
 ## 修改映射与迁移平台
 

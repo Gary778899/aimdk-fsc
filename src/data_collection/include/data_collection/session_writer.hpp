@@ -8,7 +8,7 @@
 #include <nlohmann/json.hpp>
 #include <rclcpp/serialized_message.hpp>
 
-namespace data_collection_edge_agent
+namespace data_collection
 {
 
 using Json = nlohmann::json;
@@ -45,4 +45,4 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace data_collection_edge_agent
+}  // namespace data_collection

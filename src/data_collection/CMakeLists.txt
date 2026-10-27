@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(data_collection_edge_agent)
+project(data_collection)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -61,28 +61,28 @@ endif()
 string(REPLACE "\\" "\\\\" COLLECTION_SDK_VERSION "${COLLECTION_SDK_VERSION}")
 string(REPLACE "\"" "\\\"" COLLECTION_SDK_VERSION "${COLLECTION_SDK_VERSION}")
 
-add_executable(data_collection_edge_agent_node
-  src/data_collection_edge_agent_node.cpp
+add_executable(data_collection_node
+  src/data_collection_node.cpp
   src/state_mapper.cpp
   src/session_writer.cpp
 )
-target_compile_features(data_collection_edge_agent_node PRIVATE cxx_std_17)
-target_compile_definitions(data_collection_edge_agent_node PRIVATE
+target_compile_features(data_collection_node PRIVATE cxx_std_17)
+target_compile_definitions(data_collection_node PRIVATE
   DATA_COLLECTION_SDK_VERSION="${COLLECTION_SDK_VERSION}"
   DATA_COLLECTION_CODE_VERSION="${COLLECTION_CODE_VERSION}"
 )
-target_include_directories(data_collection_edge_agent_node PRIVATE
+target_include_directories(data_collection_node PRIVATE
   include
   ${CPPZMQ_INCLUDE_DIR}
 )
-target_link_libraries(data_collection_edge_agent_node
+target_link_libraries(data_collection_node
   PkgConfig::ZeroMQ Threads::Threads nlohmann_json::nlohmann_json
 )
-ament_target_dependencies(data_collection_edge_agent_node
+ament_target_dependencies(data_collection_node
   rclcpp rmw builtin_interfaces aimdk_msgs rosbag2_cpp rosbag2_storage mcap_vendor
 )
 
-install(TARGETS data_collection_edge_agent_node DESTINATION lib/${PROJECT_NAME})
+install(TARGETS data_collection_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS scripts/collection_control.py
