@@ -2,6 +2,27 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "机器人：下载采集数据",
+            "type": "process",
+            "command": "rsync",
+            "args": [
+                "-az",
+                "--checksum",
+                "--itemize-changes",
+                "--human-readable",
+                "--info=progress2",
+                "agi@10.0.1.41:/home/agi/data-fsc/",
+                "${workspaceFolder}/data/"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true,
+                "focus": true
+            }
+        },
+        {
             "label": "机器人：预览同步",
             "type": "process",
             "command": "rsync",
@@ -18,6 +39,8 @@
                 "--exclude=.aws/",
                 "--exclude=build/",
                 "--exclude=install/",
+                "--exclude=exports/",
+                "--exclude=data/",
                 "--exclude=log/",
                 "--exclude=.venv/",
                 "--exclude=build-humble/",
@@ -30,7 +53,6 @@
                 "--exclude=*.md",
                 "--exclude=.pytest_cache/",
                 "--exclude=src/locomotion_wrapper",
-                "--exclude=src/data_collection_edge_agent/",
                 "--rsync-path=mkdir -p /home/agi/aimdk-fsc/ && rsync",
                 "${workspaceFolder}/",
                 "agi@10.0.1.41:/home/agi/aimdk-fsc/"
@@ -61,6 +83,8 @@
                 "--exclude=build/",
                 "--exclude=install/",
                 "--exclude=log/",
+                "--exclude=exports/",
+                "--exclude=data/",
                 "--exclude=.venv/",
                 "--exclude=build-humble/",
                 "--exclude=install-humble/",
@@ -72,7 +96,6 @@
                 "--exclude=*.md",
                 "--exclude=.pytest_cache/",
                 "--exclude=src/locomotion_wrapper",
-                "--exclude=src/data_collection_edge_agent/",
                 "--rsync-path=mkdir -p /home/agi/aimdk-fsc/ && rsync",
                 "${workspaceFolder}/",
                 "agi@10.0.1.41:/home/agi/aimdk-fsc/"
