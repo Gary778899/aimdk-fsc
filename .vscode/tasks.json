@@ -23,6 +23,27 @@
             }
         },
         {
+            "label": "机器人：下载日志",
+            "type": "process",
+            "command": "rsync",
+            "args": [
+                "-az",
+                "--checksum",
+                "--itemize-changes",
+                "--human-readable",
+                "--info=progress2",
+                "agi@10.0.1.41:/home/agi/aimdk-fsc/log/",
+                "${workspaceFolder}/log/"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true,
+                "focus": true
+            }
+        },
+        {
             "label": "机器人：预览同步",
             "type": "process",
             "command": "rsync",
