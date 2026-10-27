@@ -6,9 +6,12 @@ import subprocess
 import sys
 
 
-# 仅处理两个固定目录；保留目录本身，不跟随目录内的符号链接。
+# 默认清理数据和日志；全量清理时增加项目目录，不跟随目录内的符号链接。
 REMOTE_SCRIPT = r'''set -euo pipefail
-roots=(/home/agi/data-fsc /home/agi/aimdk-fsc)
+roots=(/home/agi/data-fsc /home/agi/aimdk-fsc/log)
+if [[ "$2" == '--all' ]]; then
+    roots+=(/home/agi/aimdk-fsc)
+fi
 
 # 删除前先检查全部根目录；拒绝将根目录符号链接作为清理入口。
 for root in "${roots[@]}"; do
@@ -36,8 +39,8 @@ def main():
     """解析本地命令并调用 SSH；返回远程命令退出码，启动失败时返回 1。"""
     parser = argparse.ArgumentParser(
         description=(
-            "通过 SSH 清空 /home/agi/aimdk-fsc 和 /home/agi/data-fsc，"
-            "保留两个目录本身。默认仅预览。"
+            "通过 SSH 清空 /home/agi/data-fsc 和 /home/agi/aimdk-fsc/log，"
+            "添加 --all 同时清空 /home/agi/aimdk-fsc。默认仅预览。"
         ),
         epilog=(
             "执行前必须停止实验和采集，并完成数据下载与核对。"
@@ -45,10 +48,14 @@ def main():
         ),
     )
     parser.add_argument(
-        "--execute", action="store_true", help="实际删除两个目录内的全部内容"
+        "--execute", action="store_true", help="实际删除所选目录内的全部内容"
+    )
+    parser.add_argument(
+        "--all", action="store_true", help="同时清空整个项目目录（含源码和构建产物）"
     )
     args = parser.parse_args()
     mode = "--execute" if args.execute else "--preview"
+    scope = "--all" if args.all else "--data-log"
     print(
         "实际清理：请确保已停止实验和采集，且数据已下载并核对。"
         if args.execute
@@ -57,7 +64,7 @@ def main():
     )
     try:
         result = subprocess.run(
-            ["ssh", "agi@10.0.1.41", "bash", "-s", "--", mode],
+            ["ssh", "agi@10.0.1.41", "bash", "-s", "--", mode, scope],
             input=REMOTE_SCRIPT,
             text=True,
             check=False,
