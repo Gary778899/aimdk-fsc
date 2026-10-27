@@ -4,11 +4,14 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -29,6 +32,27 @@ int64_t system_time_ns()
 {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+/** @brief 将 Unix 纳秒时间转为固定北京时间的目录时间字段；转换失败时抛出异常。 */
+std::string session_time_label(int64_t system_ns)
+{
+  const auto elapsed = std::chrono::nanoseconds(system_ns);
+  const auto seconds = std::chrono::floor<std::chrono::seconds>(elapsed);
+  const auto nanoseconds = (elapsed - seconds).count();
+  // 固定加八小时后按 UTC 格式化，避免受到容器默认时区影响。
+  const auto beijing_seconds = static_cast<std::time_t>(seconds.count() + 8 * 60 * 60);
+  std::tm calendar{};
+  char date_time[32];
+  if (gmtime_r(&beijing_seconds, &calendar) == nullptr ||
+    std::strftime(date_time, sizeof(date_time), "%Y%m%d_%H%M%S", &calendar) == 0)
+  {
+    throw std::runtime_error("cannot format session start time");
+  }
+  std::ostringstream label;
+  label << date_time << '_' << std::setfill('0') << std::setw(9) << nanoseconds <<
+    "_UTCp0800";
+  return label.str();
 }
 
 /** @brief 将计数器初始化为提交、成功写入、丢弃均为零的对象。 */
@@ -120,10 +144,11 @@ public:
     }
     try {
       std::filesystem::create_directories(root_);
+      const auto time_label = session_time_label(started_ns_);
       static std::atomic<uint64_t> sequence{0};
       std::filesystem::path selected;
       for (std::size_t attempt = 0; attempt != 100; ++attempt) {
-        selected = root_ / ("collection_" + std::to_string(started_ns_) + "_" +
+        selected = root_ / ("data_" + time_label + "_" +
           std::to_string(getpid()) + "_" + std::to_string(sequence.fetch_add(1)));
         if (std::filesystem::create_directory(selected)) {
           break;
