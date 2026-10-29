@@ -1,7 +1,8 @@
 # 自定义功能工具
 
 ROS 2 包名为 `aimdk_functions`，使用 `ament_python`。目前提供音量命令
-`volume_control` 和单次上肢控制命令 `dual_arm_control`。
+`volume_control`、单次上肢控制命令 `dual_arm_control`，以及只读验证命令
+`arm_compensation_probe`。
 
 由用户同步工作区后，在机器人开发板的 Humble 容器中，从工作区根目录构建：
 
@@ -16,6 +17,70 @@ ros2 run aimdk_functions volume_control get-volume
 如使用自定义构建、安装目录，沿用对应 colcon 参数并 source 对应安装目录。
 本次功能整合只完成本地静态检查，尚未执行机器人容器构建或真机验收。
 原有实验已验证的结果见 [test.md](../../test.md)，不自动推广为新增七关节动作的验收结果。
+
+## SD / URS 重力补偿只读观测
+
+脚本为 `aimdk_functions/arm_compensation_probe.py`。在机器人 Humble/AimDK
+环境中使用；不需要 Pinocchio、MuJoCo 或额外 Python 第三方依赖。
+由操作者预先进入待观测模式；tag 只指定预期模式，不调用 SetMcAction，
+不发布运动指令，也不会停止原厂 MC。`SD` 对应 `STAND_DEFAULT`，
+`URS` 对应 `UPPERBODY_REMOTE_SPLIT`（不是 `UPPER_REMOTE_SPLIT`）。
+
+同步后可直接从工作区根目录运行源码，无需为此重新构建功能包；
+终端应已加载机器人现有的 ROS 2 Humble 和匹配的 AimDK 环境：
+
+```bash
+python3 src/functions/aimdk_functions/arm_compensation_probe.py --tag SD
+
+# 操作者按已有流程进入 URS 后，另行执行，不会自动切换模式。
+python3 src/functions/aimdk_functions/arm_compensation_probe.py --tag URS
+
+# 可延长记录并指定实际工作区内的日志目录。
+python3 src/functions/aimdk_functions/arm_compensation_probe.py \
+  --tag URS --seconds 30 --sample-hz 50 --log-dir ./log
+```
+
+按本页构建并加载安装环境后，也可以使用：
+
+```bash
+ros2 run aimdk_functions arm_compensation_probe --tag SD
+ros2 run aimdk_functions arm_compensation_probe --tag URS
+```
+
+默认等待 ROS 图发现 3 秒，再正式记录 15 秒。每路话题最多保存 50 Hz，
+实际订阅为 best_effort / volatile / depth=100；计数覆盖回调收到的所有样本，
+不能统计 DDS 或订阅队列已经丢失的样本。源频率较低时不会补帧，
+高频源会被限频保存，不代表全量实时追踪或严格同步。
+
+每次在自动探测的工作区 `log/` 下创建独立 `arm_probe_<TAG>_<UTC时间>_<唯一值>/`：
+
+| 文件 | 内容 |
+| --- | --- |
+| `metadata.json` | 预期模式、采集参数、主机、Python/ROS 环境及话题清单 |
+| `graph_start.json` / `graph_end.json` | 采集前后节点、话题、服务和目标话题各端点的类型、GID、QoS |
+| `events.jsonl` | 完整消息字段、接收墙钟/单调时间、模式观测及服务响应/超时 |
+| `summary.json` | 各路收到/保存数量、源时间重复/回退/零值计数、模式匹配、缺失必需流和错误 |
+| `report.log` | 可直接查看和回传的中文模式与话题统计报告 |
+
+记录范围包括上半身目标、手臂/头/手/腰命令与反馈、胸部/躯干 IMU、
+MC common state、通用 debug 和 RL debug。源消息中的时间、关节名称、
+effort、增益、模式和错误字段完整保留；非有限浮点保存为 `NaN`、`inf`、
+`-inf` 字符串。debug 数组不自动解释未知槽位。
+GetMcAction 每秒尝试查询一次，每次最多等待 2 秒；同时记录 common state
+的模式变化。不会自动生成“已启用/未启用重力补偿”的结论，也不从不同时间的
+command/state 直接计算补偿力矩。`meas_stamp=0` 保留原值，不以接收时间替代。
+
+实际模式不符时仍继续记录，并标记不匹配；无上半身目标发布者或某些可选话题
+没有消息时也继续记录。退出码 `0` 表示已收到手臂 command/state、至少一次
+GetMcAction 确认目标模式及 RUNNING、未观察到模式不符且未发生采集错误；
+它不代表重力补偿或真机控制验收通过。退出码 `2` 表示观测不完整/模式不符，
+`130` 表示 Ctrl+C，`1` 表示环境或文件错误；已产生的日志保留。
+Ctrl+C 或异常时尽量写入总结；强制杀进程或断电可能只保留已写出的事件。
+环境加载等启动错误尽量写入 `failure.json`。优先查看 `report.log`，
+进一步分析使用 `events.jsonl` 的消息字段；只回传统计报告不能完成力矩分析。
+
+日志可通过现有 VS Code 任务“机器人：下载日志”取回，先等待脚本退出。
+无需修改同步排除规则。此工具仅完成本地静态/语法审阅，待机器人容器实测。
 
 ## 单次双臂与夹爪控制
 

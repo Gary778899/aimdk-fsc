@@ -23,6 +23,7 @@ setup(
         'console_scripts': [
             'volume_control = aimdk_functions.volume_control:main',
             'dual_arm_control = aimdk_functions.dual_arm_control:main',
+            'arm_compensation_probe = aimdk_functions.arm_compensation_probe:main',
         ],
     },
 )
