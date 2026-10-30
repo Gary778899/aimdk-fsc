@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "units": "rad",
+  "source": {
+    "project": "Agibot-X2-IK-upper-body-control",
+    "commit": "444598038cf0e5b27e32e3e5295ab24503ecd43f",
+    "package": "x2ik",
+    "version": "2.1.0",
+    "wheel_member": "x2ik/x2_ultra.urdf",
+    "urdf_sha256": "1163b3c76b31c4ea0afd284b67b28948003ce46f7ea4b2d9826f1309e9af7f11"
+  },
+  "joints": [
+    {
+      "name": "left_shoulder_pitch_joint",
+      "lower": -3.08,
+      "upper": 2.04
+    },
+    {
+      "name": "left_shoulder_roll_joint",
+      "lower": -0.061,
+      "upper": 2.993
+    },
+    {
+      "name": "left_shoulder_yaw_joint",
+      "lower": -2.556,
+      "upper": 2.556
+    },
+    {
+      "name": "left_elbow_joint",
+      "lower": -2.3556,
+      "upper": 0.0
+    },
+    {
+      "name": "left_wrist_yaw_joint",
+      "lower": -2.556,
+      "upper": 2.556
+    },
+    {
+      "name": "left_wrist_pitch_joint",
+      "lower": -0.558,
+      "upper": 0.558
+    },
+    {
+      "name": "left_wrist_roll_joint",
+      "lower": -1.571,
+      "upper": 0.724
+    },
+    {
+      "name": "right_shoulder_pitch_joint",
+      "lower": -3.08,
+      "upper": 2.04
+    },
+    {
+      "name": "right_shoulder_roll_joint",
+      "lower": -2.993,
+      "upper": 0.061
+    },
+    {
+      "name": "right_shoulder_yaw_joint",
+      "lower": -2.556,
+      "upper": 2.556
+    },
+    {
+      "name": "right_elbow_joint",
+      "lower": -2.3556,
+      "upper": 0.0
+    },
+    {
+      "name": "right_wrist_yaw_joint",
+      "lower": -2.556,
+      "upper": 2.556
+    },
+    {
+      "name": "right_wrist_pitch_joint",
+      "lower": -0.558,
+      "upper": 0.558
+    },
+    {
+      "name": "right_wrist_roll_joint",
+      "lower": -0.724,
+      "upper": 1.571
+    }
+  ]
+}

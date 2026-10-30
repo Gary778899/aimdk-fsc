@@ -2,7 +2,8 @@
 
 ROS 2 包名为 `aimdk_functions`，使用 `ament_python`。目前提供音量命令
 `volume_control`、单次上肢控制命令 `dual_arm_control`，以及只读验证命令
-`arm_compensation_probe`。
+`arm_compensation_probe`、`upper_body_kinematics_check`，以及默认只读的
+单臂端点运动命令`upper_body_move`。
 
 由用户同步工作区后，在机器人开发板的 Humble 容器中，从工作区根目录构建：
 
@@ -244,3 +245,361 @@ MC、手臂和夹爪的接收间隔、源时间停滞及源年龄上限均默认
 
 新增脚本在 `setup.py` 注册入口，并在 `package.xml` 声明依赖。
 维护者邮箱和许可证目前为占位信息，正式发布前需替换。
+
+## 遥操第一阶段：步骤一、二开发
+
+包内新增 `upper_body_kinematics/`。`vendor/` 成组保存参考项目的 FK、SRS IK、
+批量后端和 TCP 实现；`adapter.py` 提供 `ArmKinematics`，左右分别建模。
+默认 `tcp_mode='none'` 为腕原点；`hand` / `gripper` 是参考数据的名义工具点，
+不能作为已完成的工具标定。custom 使用完整的腕坐标平移及旋转矩阵。
+姿态矩阵将 TCP 坐标映射至 `torso_link`，位置 m、关节 rad；适配 API 不接收四元数，
+后续四元数接口统一约定 xyzw。求解和观测接口均不导入 ROS。
+
+`parameters.py` 固定包内完整官方 v1.3.0 URDF 及哈希；安装后不依赖 `extra/`
+或开发者绝对路径。URDF 保留网格引用但未附网格，只用于 XML 运动学，不能直接当成
+完整可视化或仿真资源包。`parameter_report()` 提供完整名称/索引/槽位/限位报告。
+
+| 名称（分别加 `left_` / `right_`） | 单臂模型索引 | SDK 左 / 右槽位 |
+| --- | --- | --- |
+| `shoulder_pitch_joint` | 0 | 0 / 7 |
+| `shoulder_roll_joint` | 1 | 1 / 8 |
+| `shoulder_yaw_joint` | 2 | 2 / 9 |
+| `elbow_joint` | 3 | 3 / 10 |
+| `wrist_yaw_joint` | 4 | 4 / 11 |
+| `wrist_pitch_joint` | 5 | 5 / 12 |
+| `wrist_roll_joint` | 6 | 6 / 13 |
+
+按2026-10-29用户要求，新路径的 `EXECUTION_LIMITS_RAD` 以固定参考项目
+`x2ik 2.1.0` URDF限位为基准，不再与官方模型或既有命令范围取交集；
+随后按用户要求，左肩roll下限降低1°、右肩roll上限提高1°，其余边界保持参考值。
+数据按关节名称提取到包内 `assets/reference_joint_limits.json`，保留参考提交与URDF哈希，
+在构造 SRS 求解器及批量缓存前统一注入；候选检查和完整目标组装使用同一份参数。
+模型几何仍使用官方完整URDF，`parameter_report()`分别报告官方范围、原始参考范围、
+调整后的执行范围及来源；`execution_limit_adjustments_deg`保留两处有符号边界调整。
+旧 `dual_arm_control` 不变。反馈 FK 可观测超执行范围的
+有限输入；IK 种子和候选须满足新范围，拒绝超限，不静默裁剪。
+
+| 关节 | 左臂当前执行范围 / rad | 右臂当前执行范围 / rad |
+| --- | --- | --- |
+| shoulder pitch | [-3.08, 2.04] | [-3.08, 2.04] |
+| shoulder roll | [-0.07845329252, 2.993] | [-2.993, 0.07845329252] |
+| shoulder yaw | [-2.556, 2.556] | [-2.556, 2.556] |
+| elbow | [-2.3556, 0] | [-2.3556, 0] |
+| wrist yaw | [-2.556, 2.556] | [-2.556, 2.556] |
+| wrist pitch | [-0.558, 0.558] | [-0.558, 0.558] |
+| wrist roll | [-1.571, 0.724] | [-0.724, 1.571] |
+
+肩roll调整使用精确的1°转rad，不使用表中显示舍入值。
+最新SD反馈右肩roll为0.0645223rad，位于调整后的上限0.07845329252rad内；
+该边界拒绝条件已消除；用户回传的`SD_adjusted`快照已完成双侧只读往返求解，详见下节。
+
+`solve_initial()` 与 `track()` 分开，后者显式关闭工作空间投影和全局搜索兜底。
+适配层返回的候选仍需后续验证层独立检查 FK 残差、步长及分支。
+
+`upper_body_cartesian_core.py` 保存固定采样和单臂完整目标组装契约：
+校验所选臂起点和目标，另一臂及夹爪保留采样值，不自动裁剪。
+`upper_body_ros.py` 提供只读订阅、既有源时间监视和错误锁存，以及完整消息组装；
+默认只记录实际模式，不强制只读观测处于 URS。这里没有运动发布器或模式切换，
+消息组装不能作为运动授权。执行模式的有界服务确认、定时发布及退出状态机留至步骤六。
+`upper_body_diagnostics.py` 的 `UpperBodyLog(directory, **metadata)` 按事件增量写盘，
+日志目录显式指定工作区 `log/`，复用现有下载任务，不覆盖历史事件。
+原始消息中的非有限浮点明确编码为字符串；日志写入失败直接报错。
+
+依赖为 Python >=3.10 / NumPy >=1.21，面向机器人 Humble 容器。
+步骤三的只读验证命令见下节；最小单臂端点运动入口见文末。
+单臂平移直线离散IK及完整路径发送已实现；旋转目标与双臂同步尚未实现。
+补偿依赖单独存放，不接入默认目标或发送行为。
+来源、原始及适配文件哈希见 [提取记录](../../docs/x2_teleop_extraction.md)。
+步骤一、二已有用户回传的容器构建与两个合成姿态的离线FK→IK→FK结果；
+后续实际反馈只读验证及运动执行结果分别记录在下节和直线入口说明中。
+
+## 步骤三：实际反馈的只读 FK→IK→FK 验证
+
+入口 `upper_body_kinematics_check` 只订阅手臂、夹爪与MC反馈，固定腕原点TCP
+`none`，不创建运动发布器、不调用Get/Set模式服务、不提供`--execute`。
+默认记录实际模式，不要求操作者为数学验证切换到URS。
+要求完整14关节、两侧CLAW夹爪和MC反馈有效，沿用现有错误锁存、源时间回退/推进、
+接收时效及ROS时钟检查。反馈话题/QoS沿用既有双臂命令，源码见`upper_body_ros.py`。
+
+处理分两段：先持续处理回调并保存完整快照，再关闭ROS订阅进行数学求解。
+这样不会把本程序计算期间未处理回调误判为反馈断流。计算阶段使用的是保存的历史快照，
+不监视此后的现场变化。各流有独立源时间、接收时间和序号，不宣称硬件同步。
+
+同步最新代码后，在机器人开发容器已配置的Humble/AimDK终端中构建：
+
+```bash
+cd /home/agi/aimdk-fsc
+colcon build --base-paths src --packages-up-to aimdk_functions
+source install/setup.bash
+ros2 run aimdk_functions upper_body_kinematics_check --help
+```
+
+沿用实际环境的自定义构建/安装目录参数。首次保持当前已有稳定姿态，确保反馈节点
+正常运行，无需通过本命令改变姿态或模式。先采样一次，确认订阅和输入：
+
+```bash
+ros2 run aimdk_functions upper_body_kinematics_check \
+  --samples 1 --label initial_pose --log-dir ./log
+echo $?
+```
+
+然后在同一姿态重复采样，观察左右结果和重复性：
+
+```bash
+ros2 run aimdk_functions upper_body_kinematics_check \
+  --samples 5 --interval 1 --label pose_A --log-dir ./log
+```
+
+`--samples`默认3、`--interval`默认1秒；重复静止姿态采样不代表已覆盖不同姿态。
+待操作者按既有现场流程形成其他已允许的姿态并稳定后，再分别以`pose_B`、`pose_C`
+等标签重复。这个命令不会帮助移动到其他姿态，不要求摆到限位附近。
+可用`--side left/right`只计算一侧，但采样仍保留并校验完整双臂、夹爪及MC反馈。
+硬件实际零位、轴向和TCP定位精度仍需后续独立测量。
+
+按实际已核实的信息补充`--sdk-version`、`--firmware-version`、`--load-description`；
+未提供时明确记录为`unknown`。`--timeout`默认5秒，分别用于启动及等待下一快照；
+`--feedback-timeout`默认0.5秒，允许0.2..1秒，与既有命令范围一致。反馈错误、
+源时间冻结/回退或超时按原契约报错，不通过重新打接收时间或裁剪输入继续。
+
+在任一已能正常采样的姿态，可额外运行无发布的数学用例：
+
+```bash
+ros2 run aimdk_functions upper_body_kinematics_check \
+  --samples 1 --check-cases --label boundary_math --log-dir ./log
+echo $?
+```
+
+`--check-cases`在采样结束后检查两侧每关节的精确限位、相邻内侧浮点数、
+相邻外侧种子及关节目标，另含非有限种子和明确不可达的空间目标。
+完整双侧共116项用例；所有目标只在内存中计算，不发送到机器人，不要求实机处于这些姿态。
+边界FK→IK的残差、无解或候选拒绝仅作观测，不任意新增残差门槛；
+越界种子和关节目标必须明确拒绝，不可达目标应返回无解或拒绝，意外返回候选会报告异常。
+合成边界用例采用范围中点作为其他关节输入，不是实际快照或运动计划。
+
+每次生成独立的`log/upper_body_*.jsonl`，启动时打印准确文件名，逐事件写盘。
+`metadata`包含代码摘要、实际安装路径、模型哈希、完整限位、环境和实验标签；
+`feedback`保留完整原始消息及错误，`snapshot`关联各流独立源时间/接收时间/序号；
+`round_trip`包含请求位姿、候选、独立回算残差、原始及绕角种子距离、SEW、分支和计算耗时；
+`diagnostic_case`包含合成用例及预期匹配情况，`summary`记录数量，`exit/error`保留退出原因。
+耗时包含调用及诊断计算，不等于连续控制周期性能。非有限原始值以明确字符串保存。
+
+退出码`0`表示采样完成、实际快照均返回有限且符合限位的候选、所启用的失败用例符合契约；
+它没有施加实测精度门槛，不代表运动授权或定位验收。`2`表示实际快照无解/超限拒绝等不完整
+结果或用例契约异常；`1`表示环境、反馈、文件或运行异常；`130`表示用户中断。
+实际关节超出新执行范围时仍保存FK与超限列表，但拒绝以该种子求解，不能改范围后算作通过。
+中途失败或中断时保留已写入的反馈及快照，可能没有最终summary。
+
+程序退出后，复用“机器人：下载日志”任务取回完整JSONL和终端输出。
+审阅时分别检查：输入是否完整新鲜、实际模式、超限原因、左右残差/种子距离/分支、
+失败用例是否符合预期。重复采样、多个姿态和完整用例用于后续覆盖，不作为首次最小闭环的必做流程。
+用户已回传肩roll调整后的`SD_adjusted`日志：双侧实际快照均返回限位内候选，
+异常计数0，模型内往返残差约为浮点计算精度；尚未验证实体TCP定位精度。
+
+## 最小单臂端点运动闭环
+
+`upper_body_move`从一次实际快照出发，在`torso_link`下沿x/y/z轴给定平移增量，
+固定起点旋转、腕原点TCP、另一臂和双侧夹爪的采样目标。
+零位移直接保留原关节角；非零位移用当前关节角和SEW臂角调用局部`track()`，
+关闭工作空间投影和全局搜索兜底，避免全局初解的限位偏好导致约21°的姿态重排。
+首次局部求解不预设解析分支，记录实际返回分支；无解或超限明确拒绝，不重试或放宽姿态。
+
+本轮只做一个笛卡尔端点的IK，然后通过原生`/mc/upper_body_command`做一次
+MoveJ式关节五次插值。它不是参考项目`Robot.moveJ()`的直接调用，
+中间TCP路径也不保证为笛卡尔直线。直线离散IK跟踪见下方`upper_body_line`。
+所选臂每关节总变化沿用既有单次实验的10°上限，时长沿用5..10秒；
+该上限用于本次小幅验证，不是机器人额定运动能力。独立回算位姿残差写入日志及终端，
+不额外引入未经实测的精度门槛。
+
+用户同步后在机器人Humble/AimDK容器构建并加载：
+
+```bash
+cd /home/agi/aimdk-fsc
+colcon build --base-paths src --packages-up-to aimdk_functions
+source install/setup.bash
+ros2 run aimdk_functions upper_body_move --help
+```
+
+最小验证只需两次调用：先在当前有效姿态只读查看一个小端点，例如左臂沿torso的+x方向5mm：
+
+```bash
+ros2 run aimdk_functions upper_body_move \
+  --side left --axis x --delta-mm 5 --log-dir ./log
+```
+
+核对打印的实际起点、端点、全部关节变化和FK残差。若返回无解/超限，先回传日志，
+不增加步长或改限位绕过。可选用`--delta-mm 0`检查保持当前姿态的分支，不是必做测试。
+只读调用不要求URS，不创建运动发布器或模式客户端。
+
+确认现场动作空间及没有其他上肢目标发布者后，由操作者按已有流程进入URS/RUNNING，
+再执行一次：
+
+```bash
+ros2 run aimdk_functions upper_body_move \
+  --side left --axis x --delta-mm 5 --duration 5 --execute --log-dir ./log
+```
+
+执行调用会重新采样，以本次姿态规划相对位移；不会重用上一次只读调用的绝对目标。
+执行前有界查询GetMcAction确认URS/RUNNING，运行期间继续检查模式和反馈。
+沿用50Hz发送、80ms发布间隔上限、全14关节±3°跟踪检查、终点新源反馈连续确认0.3秒、
+关节轨迹结束后额外等待最多2秒；夹爪开度误差只记录。
+本轮按操作者要求屏蔽本命令的夹爪状态/静止门槛：采样、发布、执行循环及终点确认
+均不再以`state`或静止候选阻断，速度也不作为静止门槛；仍保持采样开度，
+保留完整夹爪原始反馈、故障码、有限值、类型/数量及源时间/时效检查。
+终端和日志明确记录`hand_state_check=False`；`dual_arm_control`也已按操作者要求屏蔽夹爪状态及静止门槛，见前述说明。
+夹爪状态来自`/aima/hal/joint/hand/state`的`aimdk_msgs/msg/HandStateArray`，
+读取`left_hands[0].state`与`right_hands[0].state`；SDK说明为
+0到达目标、1移动中、2堵转、3物体掉落。
+增加`--delta-mm`时仍先只读核对计划；逐关节10°总变化上限与有效限位不变。
+发布前按当前新遥操限位再检查所选臂目标，未选臂保持采样值、不裁剪。
+有限且残差小的数学候选不等于实体TCP精度验收；终点±3°确认也不证明精确移动了5mm。
+
+正常完成、失败或Ctrl+C都停止本命令发布，不自动返程或切换模式；
+停止发布不是硬件急停，也不保证退出后固件持续保持。
+日志增量写入`log/upper_body_*.jsonl`，包含起点、端点计划、完整发送目标和原始反馈，
+结束报告实测关节变化及反馈FK；等待退出后通过现有日志任务下载。
+首次先验证一侧即可，不需要重复跑116项数学用例。
+
+用户已在机器人环境回传左臂10mm、15mm端点运动执行记录，
+每次发布265帧并以`completed`结束；此前5mm尝试曾因夹爪静止门槛在发布前中止。
+这些记录验证端点规划及关节插值执行链路，不代表实体TCP定位精度验收。
+
+
+### 单臂直线路径：upper_body_line
+
+`upper_body_line`沿用一次实际采样、腕原点TCP、torso坐标轴和固定起点姿态。
+区别于`upper_body_move`仅求终点，本命令先用五次时间曲线生成整条直线位置序列，
+时间网格不大于20ms（5秒为251点），逐点调用局部`track()`。
+首点直接保留原角，首个非零点确定解析分支，后续以前一点关节、SEW及分支连续求解。
+未启用补偿时零位移整段保持原角；不进行全局搜索、投影或姿态放宽。
+显式位置偏置补偿用法见下节。
+整条路径接受后才允许创建发布器；无解、越限或分支改变时报告失败点并拒绝执行。
+逐点相对采样起点及相邻关节变化沿用10°上限，不新增未经实测的精度门槛。
+
+运行时按实际经过时间取路径目标，以50Hz发布；相邻网格点之间采用线性关节插值，
+因此这是离散直线规划的近似执行，不宣称连续实体TCP严格为直线。
+运行期复用原有URS/RUNNING、反馈时效、±3°跟踪和终点连续0.3秒确认。
+**夹爪状态及静止检查继续屏蔽**，仍保持采样开度，保留故障码及反馈有效性检查。
+未选臂保持本次采样目标，不自动返程或换模式。
+已观察到URS首次发布时双臂约0.5秒内的偏移，默认只记录；显式补偿只作用于所选臂，
+不跳过对应反馈检查；到位成功不等于毫米级轨迹精度验收。
+
+同步后在机器人Humble/AimDK容器内构建：
+
+```bash
+colcon build --base-paths src --packages-up-to aimdk_functions
+source install/setup.bash
+```
+
+先只读查看左臂torso +X 10mm、5秒的完整规划：
+
+```bash
+ros2 run aimdk_functions upper_body_line \
+  --side left --axis x --delta-mm 10 --duration 5 --log-dir ./log
+```
+
+核对关节变化、整条路径最大位置/姿态残差和最大相邻关节变化后，
+由操作者进入URS/RUNNING，再执行一次（会重新采样和规划）：
+
+```bash
+ros2 run aimdk_functions upper_body_line \
+  --side left --axis x --delta-mm 10 --duration 5 --execute --log-dir ./log
+```
+
+日志仍为`log/upper_body_*.jsonl`，元数据`command=upper_body_line`。
+`line_plan_point`保存每点时间、请求位置、FK位置、完整关节目标、残差、SEW和分支；
+`plan`保存最大残差和变化摘要；`motion_begin`保存执行单调时钟起点，
+结合`command_published`及原始`feedback`可按时间回算轨迹，分别观察启动偏移和后续误差。
+等待退出后复用现有“机器人：下载日志”任务，无需重复整套数学用例。
+用户已确认连续局部IK、完整路径发送、规划后刷新及反馈记录闭环跑通。
+实体直线精度及姿态保持继续单独研究，±3°到位不能替代实体精度验收。
+
+
+直线入口首次实机尝试（`1793278865292187468_21af3c50`、
+`1793278949661644607_51b81220`）均完成251点规划，但未发布任何命令。
+规划耗时约0.70/0.79秒，规划后的首条MC回调读到积压消息，源时间年龄为
+0.632/0.724秒，触发既有0.5秒时限。此处已修正刷新条件：除接收时间外，
+各路源时间也必须晚于规划后刷新开始的ROS时间，才进行完整时效检查。
+等待仍受`--timeout`限制，期间持续解码、保留回退/故障等错误锁存，不扩大
+反馈时限或改写源时间。日志增加`capture_refresh_begin`及超时快照。
+该刷新修正已由用户复测，闭环跑通。
+
+
+### 步骤七：显式位置偏置补偿
+
+`upper_body_line`和`upper_body_move`均增加`--compensation`，默认关闭。
+本次为**官方X2 Ultra v1.3.0模型的适配版**，不是参考模型原版效果结论。
+使用已提取的`ArmDynamics.gravity_torque(q_ideal)`，
+`raw_bias=τg/40`，`bounded_bias=clip(raw_bias, ±12°)`；固定参数不调优。
+为从采样关节目标平滑接入，发送偏置为`a(t)·bounded_bias`，
+`a(t)`沿用本次运动时长的五次进度，终点及到位等待期间为完整偏置。
+因此显式补偿下的零位移也会引入偏置，不再是保持原角。
+原始IK路径、SEW及分支状态不受偏置反向修改。
+
+重力输入固定使用`/aima/hal/imu/torso/state`的骨盆四元数和
+`/aima/hal/joint/waist/state`的三腰角（按名称映射）。
+`R_world_torso=R_world_pelvis·R_pelvis_torso(q_waist)`，
+`g_torso=R_world_torso.T·[0,0,-9.81]`。
+模型骨盆IMU安装旋转为单位阵；实机观测该话题`frame_id=base_link`，
+模型中base_link与pelvis重合；也接受`pelvis`及`imu_in_pelvis_link`标签。
+不根据`base_link`标签把chest与pelvis话题等价处理。
+运行时拒绝无姿态标记、零/非有限四元数、无效源时间及未知标签；
+源时间推进、回退、源年龄、接收时效沿用既有检查和错误锁存。
+不采用上游低通/倾角拒绝后保留旧值的行为，不使用加速度计或静态重力兜底。
+IMU/腰源时间差记录为观测量，不宣称硬件同步，也不新增时间差阻断阈值。
+
+只修改所选臂，未选臂和两夹爪继续固定重发采样值。
+最终候选检查当前执行范围，超限拒绝，不采用上游的再次位置裁剪。
+原IK路径的10°变化约束保留；额外补偿单独受±12°偏置限幅及最终位置限位检查。
+**±3°跟踪和到位条件均保留，比较对象为补偿后的发送目标**；
+终点还要求完整偏置已经实际发布。相对原IK目标的误差另外记录，不能用到位结果
+宣称物理末端精度或补偿有效。超过既有跟踪容差仍会中止，不为补偿扩大容差。
+
+附加载荷默认0kg，即只计算URDF中的七个臂连杆；没有自动识别夹爪、工具或工件质量。
+如有已知附加载荷，用`--payload-mass-kg`和`--payload-com-m X Y Z`提供；
+质心相对腕原点，在所选侧wrist_roll_link坐标中表达，单位m。
+当前运动入口TCP固定none，不将名义TCP中心自动当成负载质心。
+`--load-description`用于保存实际姿态、工具与负载条件，未知项明确写unknown。
+
+复用既有同步任务后，在机器人Humble/AimDK容器构建：
+
+```bash
+colcon build --base-paths src --packages-up-to aimdk_functions
+source install/setup.bash
+```
+
+先只读查看与前轮相同的小范围动作；以下示例只计算URDF臂连杆重力，
+实际侧别、方向、幅度和负载参数按现场上一轮条件填写：
+
+```bash
+ros2 run aimdk_functions upper_body_line \
+  --side left --axis x --delta-mm 10 --duration 5 \
+  --compensation --log-dir ./log \
+  --load-description '记录当前姿态、夹爪、工具和负载；本次附加载荷模型为0kg'
+```
+
+只读阶段保存整条原IK路径，并用采样重力逐点预览补偿后路径；
+任何补偿后候选超限均在创建发布器前拒绝。
+核对日志和终端偏置后，由操作者进入URS/RUNNING，再显式执行同一配置：
+
+```bash
+ros2 run aimdk_functions upper_body_line \
+  --side left --axis x --delta-mm 10 --duration 5 \
+  --compensation --execute --log-dir ./log \
+  --load-description '记录本次实际姿态、夹爪、工具和负载'
+```
+
+执行前刷新包含IMU与腰的全部反馈；执行时逐周期使用新鲜且有效的最新样本重新计算，
+发布前再次核查时效、跟踪和位置范围。预览快照不直接作为执行期重力缓存。
+对照实验省略`--compensation`，分别保存起始姿态及负载条件；程序不自动返程。
+
+日志新增`compensation_config`和`compensation_plan_point`，记录模型哈希、固定参数、
+负载、适配差异、原IK目标、躯干重力、估计力矩、原始/限幅/实际引入偏置、
+限幅标记、输入源时间/接收时间/时间差及最终目标。
+`command_published.compensation`记录该条实际发送命令对应的同组诊断；
+`execution_result`同时保存原IK目标、最后发送值及反馈FK，原始IMU/腰消息也增量保存。
+复用“机器人：下载日志”任务回传。用户已回传左臂torso +X 10mm、20mm各5秒的
+有补偿执行记录（`1793279843957513668_25601ed8`、`1793279862525478573_cac3cd4d`），
+两次均发布265帧并完成既有终点确认。与此前无补偿记录比较，反馈关节经模型FK回算的
+终点误差分别由14.85/15.11mm降至3.68/5.35mm。
+对照起始姿态不同，各配置各幅度仅一次执行；该观测不等于受控实验的通用收益或实体TCP精度。
+启动偏移仍存在，补偿继续作为默认关闭的显式实验选项。
