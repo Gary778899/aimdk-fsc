@@ -78,8 +78,9 @@ def session_directory(args):
     root = args.log_dir
     if root is None:
         candidates = (Path.cwd(), *Path.cwd().parents, *Path(__file__).resolve().parents)
-        workspace = next((p for p in candidates
-                          if (p / 'src/functions/package.xml').is_file()), None)
+        workspace = next((p for marker in ('overlay/src/functions/package.xml', 'src/functions/package.xml')
+                          for p in candidates
+                          if (p / marker).is_file()), None)
         if workspace is None:
             raise ValueError('无法定位工作区，请传入 --log-dir /实际工作区/log')
         root = workspace / 'log'

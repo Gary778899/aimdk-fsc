@@ -1,4 +1,4 @@
-"""Buffered event diagnostics for head_test; disk writes occur outside motion."""
+"""双臂功能的有界内存 JSONL 日志；运动结束后集中写盘。"""
 from collections import deque
 from datetime import datetime, timezone
 import json
@@ -8,19 +8,16 @@ import uuid
 
 
 class DiagnosticLog:
-    """Collect bounded JSONL events in memory and save them when the run exits."""
+    """在内存中缓存有界事件，退出时写入 JSONL 文件。"""
 
-    def __init__(self, directory=None, prefix='head_test'):
-        """Create a unique log in directory or the detected workspace log folder.
-
-        Prefix labels the tool in the filename. Raise OSError if the destination cannot be created, or ValueError if the
-        workspace cannot be found and no explicit directory was supplied.
-        """
+    def __init__(self, directory=None, prefix='dual_arm_control'):
+        """在 directory 或自动探测的功能包工作区 log 目录创建唯一日志；无法探测或写入时抛出 ValueError/OSError。"""
         if directory is None:
             candidates = (Path.cwd(), *Path.cwd().parents,
                           *Path(__file__).resolve().parents)
-            root = next((p for p in candidates
-                         if (p / 'src/test/package.xml').is_file()), None)
+            root = next((p for marker in ('overlay/src/functions/package.xml', 'src/functions/package.xml')
+                         for p in candidates
+                         if (p / marker).is_file()), None)
             if root is None:
                 raise ValueError('workspace not found; pass --log-dir /path/to/project/log')
             directory = root / 'log'
@@ -35,14 +32,14 @@ class DiagnosticLog:
         self.record('log_open', path=str(self.path), buffered=True)
 
     def record(self, event, **fields):
-        """Buffer an event with UTC wall time and monotonic elapsed seconds."""
+        """缓存事件与字段，附加墙钟时间和单调经过时间；超过容量时丢弃最早事件。"""
         now = time.monotonic()
         self.events.append(dict(event=event, elapsed_s=now-self.started,
                                 monotonic_s=now, wall_time_ns=time.time_ns(), **fields))
         self.total += 1
 
     def close(self):
-        """Save buffered events and any truncation count; close the file once."""
+        """将缓存和丢弃计数写入日志并关闭；重复调用不重复写入，写盘错误向调用者传播。"""
         if self.stream.closed:
             return
         self.record('log_close', dropped_events=max(0, self.total + 1 - self.events.maxlen))

@@ -56,9 +56,10 @@ def log_directory(value):
     if value:
         return Path(value).expanduser().resolve()
     candidates = (Path.cwd(), *Path.cwd().parents, *Path(__file__).resolve().parents)
-    for candidate in candidates:
-        if (candidate / 'src/functions/package.xml').is_file():
-            return candidate / 'log'
+    for marker in ('overlay/src/functions/package.xml', 'src/functions/package.xml'):
+        for candidate in candidates:
+            if (candidate / marker).is_file():
+                return candidate / 'log'
     raise ValueError('无法探测工作区，请指定 --log-dir /实际工作区/log')
 
 

@@ -6,8 +6,8 @@ ROS 2 包名为 `aimdk_test`，使用 `ament_python`。当前保留头部 `head_
 通用单次七关节/夹爪控制已整合到 `aimdk_functions dual_arm_control`，
 用法见 [功能包 README](../functions/README.md)。旧 `dual_arm_control`、
 `shoulder_direction_test` 和 `gripper_close` 在本包的入口与实现已删除。
-迁移前的完整说明和用户更新的验证事实保存在 [历史说明](../../docs/archive/dual_arm_legacy_usage.md)，
-真机记录见 [test.md](../../test.md)；历史命令不代表当前入口。
+迁移前的完整说明和用户更新的验证事实保存在 [历史说明](../../../docs/archive/dual_arm_legacy_usage.md)，
+真机记录见 [历史实机记录](../../../docs/archive/dual_arm_test.md)；历史命令不代表当前入口。
 
 `arm_test` 保留的理由：它检查 STAND_DEFAULT → URS 的接管、左腕小幅往返
 以及站立交接；这些专项实验契约未被“预先进入 URS、单次去程退出”的新功能覆盖。
@@ -17,15 +17,15 @@ ROS 2 包名为 `aimdk_test`，使用 `ament_python`。当前保留头部 `head_
 由用户同步后在机器人开发板 Humble 容器内，从工作区根目录构建：
 
 ```bash
-source /opt/ros/humble/setup.bash
-colcon build --base-paths src --packages-up-to aimdk_test aimdk_functions
-source install/local_setup.bash
+bash scripts/build_overlay.sh aimdk_test aimdk_functions
+source /home/agi/aimdk/install/setup.bash
+source /home/agi/aimdk-fsc/install/local_setup.bash
 ros2 run aimdk_test head_test --help
 ros2 run aimdk_test arm_test --help
 ros2 run aimdk_functions dual_arm_control --help
 ```
 
-自定义构建/安装目录需沿用实际参数和对应的 `local_setup.bash`。
+固定 underlay 使用其他安装目录时，构建前设置 `AIMDK_UNDERLAY_INSTALL`，运行时加载同一安装目录。
 默认日志位于检测到的工作区 `log/`，无法探测时显式指定 `--log-dir`。
 本次未执行机器人容器构建和真机测试。
 

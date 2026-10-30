@@ -20,7 +20,7 @@
 | 参考项目 | `/home/gary/projects/Agibot-X2-IK-upper-body-control`，本地 Git HEAD `444598038cf0e5b27e32e3e5295ab24503ecd43f` |
 | 参考模型/源码 | `module/x2ik-2.1.0-py3-none-any.whl` 中 `x2ik/` 下文件，版本 `2.1.0` |
 | runtime 交叉核对 | `module/x2ik-runtime-2.1.0.tar.gz` 的 `runtime/x2ik/x2_ultra.urdf` 与 `x2_ultra.xml` 分别与 wheel 对应文件逐字节相同 |
-| 本项目现有执行限位 | [`dual_arm_control_core.py`](../src/functions/aimdk_functions/dual_arm_control_core.py) 的 `DOCUMENT_LIMITS_DEG`、`EXAMPLE_LIMITS_RAD`、`JOINT_LIMITS_RAD` |
+| 本项目现有执行限位 | [`dual_arm_control_core.py`](../overlay/src/functions/aimdk_functions/dual_arm_control_core.py) 的 `DOCUMENT_LIMITS_DEG`、`EXAMPLE_LIMITS_RAD`、`JOINT_LIMITS_RAD` |
 
 SHA-256 用于固定本次比较对象；官方版本标识来自用户确认、目录名称及项目约定，未联网核验发行标签。
 

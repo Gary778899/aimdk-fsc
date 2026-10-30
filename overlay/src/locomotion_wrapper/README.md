@@ -1,14 +1,16 @@
 # Read-only state observer
 
-当前构建、依赖、解释器与验收流程见 [Humble 操作指南](../../docs/humble_baseline.md)。以下命令在机器人开发板容器的工作区根目录执行，需先按指南完成干净构建。
+本包保留在本地 `overlay/src/locomotion_wrapper/`，本轮不参与机器人同步或构建，
+`scripts/build_overlay.sh` 不接受本包。分层部署流程见[根目录说明](../../../README.md)。
+以下启动及测试命令仅供未来明确部署本包时参考，不表示本轮已构建或验收。
 
 Built against this SDK's `aimdk_msgs`. This package contains subscriptions and
 standard sensor state publishers only. It does not command joints or call motion
 services.
 
 ```bash
-source /opt/ros/humble/setup.bash
-source install-humble/local_setup.bash
+source /home/agi/aimdk/install/setup.bash
+source /home/agi/aimdk-fsc/install/local_setup.bash
 ros2 run locomotion_wrapper hardware_wrapper_node
 ros2 run locomotion_wrapper joint_watch
 ```

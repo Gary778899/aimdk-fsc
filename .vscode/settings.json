@@ -1,3 +1,3 @@
 {
-    "cmake.sourceDirectory": "/home/gary/projects/aimdk-fsc/src/aimdk_msgs"
+    "cmake.sourceDirectory": "${workspaceFolder}/overlay/src/data_collection"
 }

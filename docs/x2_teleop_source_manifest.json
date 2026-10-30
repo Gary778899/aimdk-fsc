@@ -83,7 +83,7 @@
       ],
       "copy_status": "copied_on_explicit_user_instruction",
       "license_status": "unconfirmed_project_code",
-      "adapted_path": "src/functions/aimdk_functions/upper_body_kinematics/vendor/x2_arm_model.py",
+      "adapted_path": "overlay/src/functions/aimdk_functions/upper_body_kinematics/vendor/x2_arm_model.py",
       "adapted_sha256": "acd74be31d66e2d7a5dce05320d25917c234c11155a2f3ee3a83e46765deb3e7"
     },
     {
@@ -105,7 +105,7 @@
       ],
       "copy_status": "copied_on_explicit_user_instruction",
       "license_status": "unconfirmed_project_code",
-      "adapted_path": "src/functions/aimdk_functions/upper_body_kinematics/vendor/x2_srs_ik.py",
+      "adapted_path": "overlay/src/functions/aimdk_functions/upper_body_kinematics/vendor/x2_srs_ik.py",
       "adapted_sha256": "38fb1d5295516a17f0c429b1a9e13e30a25904a97b5ce3bba612418cabcd4543"
     },
     {
@@ -125,7 +125,7 @@
       ],
       "copy_status": "copied_on_explicit_user_instruction",
       "license_status": "unconfirmed_project_code",
-      "adapted_path": "src/functions/aimdk_functions/upper_body_kinematics/vendor/x2_srs_batch.py",
+      "adapted_path": "overlay/src/functions/aimdk_functions/upper_body_kinematics/vendor/x2_srs_batch.py",
       "adapted_sha256": "f5bcae5cc4384531e8c093562ae4ff47990ab19fdeedad48683ece6348a5055f"
     },
     {
@@ -146,7 +146,7 @@
       ],
       "copy_status": "copied_on_explicit_user_instruction",
       "license_status": "unconfirmed_project_code",
-      "adapted_path": "src/functions/aimdk_functions/upper_body_kinematics/vendor/x2_tcp.py",
+      "adapted_path": "overlay/src/functions/aimdk_functions/upper_body_kinematics/vendor/x2_tcp.py",
       "adapted_sha256": "462eb8bd45e7c874a148b930269a59c2902ef5f9f7006db8a03969c811e79830"
     },
     {
@@ -161,7 +161,7 @@
       "imports": [],
       "copy_status": "copied_on_explicit_user_instruction",
       "license_status": "unconfirmed_TCP_asset_rights",
-      "adapted_path": "src/functions/aimdk_functions/upper_body_kinematics/vendor/assets/tcp_presets.json",
+      "adapted_path": "overlay/src/functions/aimdk_functions/upper_body_kinematics/vendor/assets/tcp_presets.json",
       "adapted_sha256": "62eed72a8f329b23b96e70de0f02cecf50eadc7c928f899be51d8c4a47160639"
     },
     {
@@ -186,7 +186,7 @@
       ],
       "copy_status": "copied_on_explicit_user_instruction",
       "license_status": "unconfirmed_project_code",
-      "adapted_path": "src/functions/aimdk_functions/upper_body_kinematics/reference_compensation/x2_frames.py",
+      "adapted_path": "overlay/src/functions/aimdk_functions/upper_body_kinematics/reference_compensation/x2_frames.py",
       "adapted_sha256": "ab8f51e599c66ac54b656ea1bf812376010a9779aec6b38908e6db68ac1d38de"
     },
     {
@@ -209,7 +209,7 @@
       ],
       "copy_status": "copied_on_explicit_user_instruction",
       "license_status": "unconfirmed_project_code",
-      "adapted_path": "src/functions/aimdk_functions/upper_body_kinematics/reference_compensation/x2_arm_dynamics.py",
+      "adapted_path": "overlay/src/functions/aimdk_functions/upper_body_kinematics/reference_compensation/x2_arm_dynamics.py",
       "adapted_sha256": "bba24d6cabf1989c795305bc0b587bd950bce59aa3b9bfc71aa8d66026d61ea3"
     },
     {
@@ -224,7 +224,7 @@
       "imports": [],
       "copy_status": "copied_on_explicit_user_instruction",
       "license_status": "unconfirmed_project_code",
-      "adapted_path": "src/functions/aimdk_functions/upper_body_kinematics/reference_compensation/x2_compensation.py",
+      "adapted_path": "overlay/src/functions/aimdk_functions/upper_body_kinematics/reference_compensation/x2_compensation.py",
       "adapted_sha256": "6c7aabbf25abd64ca7bc3fe5e0da4372f8d726b40f8297e282f14ea4ab739798"
     },
     {
@@ -336,7 +336,7 @@
     "minimal_endpoint_motion": "upper_body_move：当前姿态局部IK单轴平移端点，默认只读，显式执行一次原生MoveJ式关节插值；不保证TCP直线；新入口仅本地静态审阅"
   },
   "execution_limits_resource": {
-    "path": "src/functions/aimdk_functions/upper_body_kinematics/assets/reference_joint_limits.json",
+    "path": "overlay/src/functions/aimdk_functions/upper_body_kinematics/assets/reference_joint_limits.json",
     "policy": "reference_urdf_with_shoulder_roll_extension",
     "source_urdf_sha256": "1163b3c76b31c4ea0afd284b67b28948003ce46f7ea4b2d9826f1309e9af7f11",
     "sha256": "6bc0028e1e828372358ded3cf477ea28d3575c264dd9f72a19763ca9495fa1ac",

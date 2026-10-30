@@ -6,13 +6,13 @@
 
 ## 当前基础与开发约定
 
-- 当前工程直接以官方 SDK 项目为基础，工作区 `version` 文件记录为 `aimdk v1.1.0-gfaf4c94`；所有的官方接口文档说明位于`docs/cn`内，SDK接口定义以及相关python示例程序分别位于`src/aimdk_msgs`和`src/py_examples`内。
-- 自研脚本已整理为 `src/test/` 下的 `aimdk_test` 和 `src/functions/` 下的 `aimdk_functions` 两个 ROS 2 Python 包；用户于 2026-10-22 确认已在机器人容器内完成构建。
-- 2026-10-26 按用户确认将固定双臂／夹爪实验整理为 `aimdk_functions dual_arm_control` 单次命令：预先进入 URS、七关节 tag、左／右／双侧、每次相对增量不超过 10°、夹爪开度控制，不自动往返。旧双臂顺序、肩方向和独立夹爪入口移除，`head_test` 与 `arm_test` 专项诊断保留；当前用法见 [功能包说明](../src/functions/README.md)。本轮仅本地静态审查，新入口尚待用户在机器人容器构建与真机验证，不沿用旧流程验收结论。
+- 当前工程直接以官方 SDK 项目为基础，本地 `underlay/version` 文件记录为 `aimdk v1.1.0-gfaf4c94`；所有的官方接口文档说明位于`underlay/docs/cn`内，SDK接口定义以及相关python示例程序分别位于`underlay/src/aimdk_msgs`和`underlay/src/py_examples`内。
+- 自研脚本已整理为 `overlay/src/test/` 下的 `aimdk_test` 和 `overlay/src/functions/` 下的 `aimdk_functions` 两个 ROS 2 Python 包；用户于 2026-10-22 确认已在机器人容器内完成构建。
+- 2026-10-26 按用户确认将固定双臂／夹爪实验整理为 `aimdk_functions dual_arm_control` 单次命令：预先进入 URS、七关节 tag、左／右／双侧、每次相对增量不超过 10°、夹爪开度控制，不自动往返。旧双臂顺序、肩方向和独立夹爪入口移除，`head_test` 与 `arm_test` 专项诊断保留；当前用法见 [功能包说明](../overlay/src/functions/README.md)。本轮仅本地静态审查，新入口尚待用户在机器人容器构建与真机验证，不沿用旧流程验收结论。
 - 用户于 2026-10-24 确认 `UPPERBODY_REMOTE_SPLIT` 可在保留下半身原生运控时接收上半身关节及末端手部指令；该模式用于遥操作接入，mc控制器是否具备重力补偿还需要进一步验证。
 - 早期手臂测试已观察到位置偏差，相关早期结果不记作精确定位或完整往返通过；2026-10-24 后续双臂上抬、两爪全开与闭合、回程流程已在声明容差内通过，见 [实机记录](../test.md)。原生控制器内部补偿实现及偏差成因仍需核实，流程通过不等于已达到任意姿态的精确定位。
 - 当前上肢接口只能输入关节位置与手部目标，没有附加力矩或增益字段。研究路线是在目标关节姿态和动力学模型基础上计算重力矩，再研究如何通过位置目标修正减少重力相关位置误差；计算出的力矩不能直接通过当前接口下发，力矩到位置修正的映射及精度收益尚未验证。按用户确认的当前控制边界，直接力矩控制属于放弃厂家控制并接管全部关节的另一条路线，本阶段不采用。
-- 当前已新增 `src/data_collection/` MCAP 采集包，其容器构建与运行结果尚未在本轮确认。`locomotion_wrapper` 观测包也已加入并完成本地源码审阅，确认当前只包含只读观测与监视工具；两个新增包的容器构建与功能结果仍需分别记录。离线控制／导出工具和策略推理包尚未加入。历史构建与测试结果不能替代新引入代码在当前机器人容器内的验收。
+- 当前已新增 `overlay/src/data_collection/` MCAP 采集包，其容器构建与运行结果尚未在本轮确认。`locomotion_wrapper` 观测包也已加入并完成本地源码审阅，确认当前只包含只读观测与监视工具；两个新增包的容器构建与功能结果仍需分别记录。离线控制／导出工具和策略推理包尚未加入。历史构建与测试结果不能替代新引入代码在当前机器人容器内的验收。
 - 本地电脑用于代码、脚本和文档编写，以及必要的静态检查。用户通过现有 VS Code rsync 任务同步，在机器人开发板容器内构建、运行和测试；只有明确要求远程验证时，才进一步确认远程环境。
 - 后续代码面向容器内实际 Humble 环境；Python 函数和方法按项目约定提供 docstring。报告分别说明本地静态检查、容器验证和真机实验的环境与结果。
 
@@ -47,8 +47,8 @@
 
 | 源码目录 | ROS 2 包名 | 已注册入口 |
 | --- | --- | --- |
-| `src/test/` | `aimdk_test` | `head_test`、`arm_test` |
-| `src/functions/` | `aimdk_functions` | `volume_control`、`dual_arm_control`（2026-10-26 新增，待容器验证） |
+| `overlay/src/test/` | `aimdk_test` | `head_test`、`arm_test` |
+| `overlay/src/functions/` | `aimdk_functions` | `volume_control`、`dual_arm_control`（2026-10-26 新增，待容器验证） |
 
 两个包均已补齐 `package.xml`、`setup.py`、`setup.cfg`、ament 资源标记和 Python 包初始化文件；测试脚本的内部导入已改为 `aimdk_test`，不再依赖 `py_examples` 中的自研模块。
 
@@ -60,10 +60,10 @@
 
 2026-10-23 确认以下范围：
 
-- 当前 `src/` 中的官方 SDK 包、自研验证工具、采集包和观测包保持平铺结构。
+- 本地官方 SDK 包位于 `underlay/src/`，自研包位于 `overlay/src/`，各层内部保持平铺结构；机器人分别使用 `/home/agi/aimdk` 和 `/home/agi/aimdk-fsc`。`locomotion_wrapper` 保留源码，本轮不参与同步或构建。
 - 下一步直接基于官方原始话题与消息定义调整 `data_collection`，记录原始反馈、实际命令和运控状态；采集器不依赖 `locomotion_wrapper` 或测试脚本构建、启动。
 - `locomotion_wrapper` 原本配合 ONNX 模型用于下半身研发链路，该方向目前不开展；保留现有只读包，相关配置、时钟、诊断与内部重构后置。
-- `src/test/` 的头部、手臂脚本为前期验证工具，2026-10-23 约定本阶段不抽取公共能力，不修改控制逻辑，也不创建公共包。2026-10-26 用户另行要求的双臂功能整合见本文当前基础及功能包 README，不作为采集器开发前置条件。
+- `overlay/src/test/` 的头部、手臂脚本为前期验证工具，2026-10-23 约定本阶段不抽取公共能力，不修改控制逻辑，也不创建公共包。2026-10-26 用户另行要求的双臂功能整合见本文当前基础及功能包 README，不作为采集器开发前置条件。
 - `aimdk_bringup` 及观测／采集组合启动框架后置；解除现有采集包对观测包的依赖时，同时处理旧联合入口，不留下默认启动观测节点的隐含前提。
 
 实施顺序：先核对原始话题配置和类型，完成独立录制、会话控制、状态统计及最小读回工具；再由用户在机器人 Humble 容器中确认实际 QoS、数据率、时间基准及功能结果。数据根目录需持久化并免受同步清理影响；`.gitignore` 不等于 rsync 保护，本轮不修改同步配置。
@@ -91,7 +91,7 @@
 
 2026-10-24 已在保留下半身原生运控的 URS 模式下完成两侧夹爪同时全开及闭合验证，模式 1 开度 `0` 为闭合、`1` 为全开。完整双臂上抬、两爪全开、保持、闭合及回程流程也已验证通过；范围和本次容差见 [实机记录](../test.md)。
 
-上述验证对应旧 `aimdk_test gripper_close` 和固定双臂顺序 `aimdk_test dual_arm_control`，两入口现已由 `aimdk_functions dual_arm_control` 替代；当前用法见 [功能包 README](../src/functions/README.md)，历史验证说明见 [测试包 README](../src/test/README.md)。基础开闭不再列为未完成项，但整合后的新入口需单独验证。
+上述验证对应旧 `aimdk_test gripper_close` 和固定双臂顺序 `aimdk_test dual_arm_control`，两入口现已由 `aimdk_functions dual_arm_control` 替代；当前用法见 [功能包 README](../overlay/src/functions/README.md)，历史验证说明见 [测试包 README](../overlay/src/test/README.md)。基础开闭不再列为未完成项，但整合后的新入口需单独验证。
 
 后续验证接触物体时的堵转、夹持保持和掉落信息，以及尚未覆盖的接管、停发与异常退出表现。区分位置重发、夹持力保持和专用保持指令，不能将它们视为同一能力。真机运动仍由用户明确启动；每项结论分别保留现场结果及记录，不以基础开闭通过替代物体夹持或异常场景验收。
 
@@ -113,7 +113,7 @@
 
 ## 任务 5：视觉抓取与针对性精度改进
 
-SDK 1.1.0 的[视觉模块](cn/_build/html/zh-cn/dev/Interface/perception/vision.html)标为待开放，但 [HAL 相机接口](cn/_build/html/zh-cn/dev/Interface/hal/sensor.html#interface-rgbd-camera)及官方订阅示例已提供前视 RGB-D、双目和后视图像；本轮仅静态核查，实机出流未验证。优先检查 `/aima/hal/sensor/rgbd_head_front/` 下的彩色、深度及内参话题和桌面视野，在 PC2 本机处理原始图像。RGB 与深度未对齐且非同步帧对，需自行配准、匹配时间戳，并结合个体标定及当前头部姿态完成坐标变换。
+SDK 1.1.0 的[视觉模块](../underlay/docs/cn/_build/html/zh-cn/dev/Interface/perception/vision.html)标为待开放，但 [HAL 相机接口](../underlay/docs/cn/_build/html/zh-cn/dev/Interface/hal/sensor.html#interface-rgbd-camera)及官方订阅示例已提供前视 RGB-D、双目和后视图像；本轮仅静态核查，实机出流未验证。优先检查 `/aima/hal/sensor/rgbd_head_front/` 下的彩色、深度及内参话题和桌面视野，在 PC2 本机处理原始图像。RGB 与深度未对齐且非同步帧对，需自行配准、匹配时间戳，并结合个体标定及当前头部姿态完成坐标变换。
 
 接入目标检测／位姿定位、相机内外参、手眼标定、坐标变换和时间对齐。先验证瓶子坐标到机器人基座坐标的转换，再扩大瓶子位置、姿态及装水量范围。
 
@@ -158,7 +158,7 @@ SDK 1.1.0 的[视觉模块](cn/_build/html/zh-cn/dev/Interface/perception/vision
 
 ## 文档治理与历史记录
 
-当前操作说明以 [测试包 README](../src/test/README.md)、[功能包 README](../src/functions/README.md) 及经本轮任务更新的文档为入口。原头部、手臂运行说明位于 `docs/archive/`，其中旧包名、命令和源码路径仅作为历史记录，当前用法以对应包 README 为准。设计与审阅记录保留其日期和证据范围，不将历史检查结果自动视为最新版本验收。
+当前操作说明以 [测试包 README](../overlay/src/test/README.md)、[功能包 README](../overlay/src/functions/README.md) 及经本轮任务更新的文档为入口。原头部、手臂运行说明位于 `docs/archive/`，其中旧包名、命令和源码路径仅作为历史记录，当前用法以对应包 README 为准。设计与审阅记录保留其日期和证据范围，不将历史检查结果自动视为最新版本验收。
 
 以下文件已位于 `docs/archive/`，无需重复归档。旧迁移记录不作为当前官方 SDK 工程的实施清单；历史文档内部链接是否有效，在引用具体证据时核查。
 

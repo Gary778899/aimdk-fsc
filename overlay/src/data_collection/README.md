@@ -12,7 +12,7 @@
 | 双臂 | `/aima/hal/joint/arm/state`／`aimdk_msgs/msg/JointStateArray` | 左右各 7 关节的位置、速度、原始 effort、错误码及整组状态 |
 | 双夹爪 | `/aima/hal/joint/hand/state`／`aimdk_msgs/msg/HandStateArray` | 左右开度、原始速度／effort、运动状态、故障码及手型 |
 
-每侧关节按 `shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_yaw, wrist_pitch, wrist_roll` 输出，输入按名称匹配。关节位置为 rad、速度为 rad/s，双臂 `effort_raw` 为 SDK 原始力矩值，单位为 Nm（N·m），映射保持 `scale=1`、`offset=0`。依据为随 SDK 提供的[关节控制文档中 JointState 定义](../../docs/cn/_build/html/zh-cn/dev/Interface/control_mod/joint_control.html#rosmsg-jointstate)。夹爪开度为 0～1，0 闭合、1 全开；夹爪 `effort_raw` 仍保留厂商归一化原值（`vendor_normalized`），不按 Nm 或实际夹持力解释。
+每侧关节按 `shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_yaw, wrist_pitch, wrist_roll` 输出，输入按名称匹配。关节位置为 rad、速度为 rad/s，双臂 `effort_raw` 为 SDK 原始力矩值，单位为 Nm（N·m），映射保持 `scale=1`、`offset=0`。依据为随 SDK 提供的[关节控制文档中 JointState 定义](../../../underlay/docs/cn/_build/html/zh-cn/dev/Interface/control_mod/joint_control.html#rosmsg-jointstate)。夹爪开度为 0～1，0 闭合、1 全开；夹爪 `effort_raw` 仍保留厂商归一化原值（`vendor_normalized`），不按 Nm 或实际夹持力解释。
 
 采样取各来源最近已收到的状态，不插值；保留各流源时间、接收时间、源序号、frame_id、接收年龄及复用标记。缺失或非有限字段用 `null` 和问题标记表示，故障反馈仍保留。50 Hz 是统一帧的目标生成频率，不保证每帧都有新的来源数据，也不代表硬件同步。
 
@@ -20,11 +20,11 @@
 
 本地先执行 VS Code 的“机器人：预览同步”，确认后再执行“机器人：推送工作区”。两项任务均已纳入本包的源码、JSON 和启动文件；其他排除规则保持原样，`*.md` 仍不推送。
 
-以下命令在**机器人开发容器的工作区根目录**执行。示例使用 colcon 默认的 `build/`、`install/`、`log/`；已有其他构建布局时使用实际对应路径。
+以下命令在**机器人开发容器的工作区根目录**执行。示例使用 colcon 默认的 `build/`、`install/`、`log/`；构建入口及固定 underlay 路径配置见[根目录说明](../../../README.md)。
 
 ### 构建前准备依赖
 
-依赖声明见 [package.xml](package.xml)。`colcon build` 和 `source install/setup.bash` 均不会安装系统依赖。下面的清单以已有 SDK、ROS 2 Humble C++ 开发环境及可用的编译工具链为基础，包含本包直接使用的系统包及 rosbag2／MCAP 插件加载链需要的系统开发包：
+依赖声明见 [package.xml](package.xml)。`colcon build` 和 `source` 环境脚本 均不会安装系统依赖。下面的清单以已有 SDK、ROS 2 Humble C++ 开发环境及可用的编译工具链为基础，包含本包直接使用的系统包及 rosbag2／MCAP 插件加载链需要的系统开发包：
 
 | Ubuntu 22.04 系统包 | 用途／引入位置 |
 | --- | --- |
@@ -106,12 +106,12 @@ dpkg-query -W -f='${binary:Package}\t${Status}\t${Version}\n' \
 ### 构建
 
 ```bash
-source /opt/ros/humble/setup.bash
-colcon build --base-paths src --packages-up-to data_collection
-source install/setup.bash
+bash scripts/build_overlay.sh data_collection
+source /home/agi/aimdk/install/setup.bash
+source /home/agi/aimdk-fsc/install/local_setup.bash
 ```
 
-CMake 只检查依赖，不自动下载或安装。沿用 SDK 的消息与预编译资源，不清理原有安装产物。
+CMake 只检查依赖，不自动下载或安装。消息依赖来自固定 underlay；SDK版本文件由构建入口通过 `AIMDK_SDK_VERSION_FILE` 指定，缺失时记录unknown，不从本地副本猜测。首次分层前由用户清空旧FSC工作区，后续构建不清理安装产物。
 
 ## 启动与录制
 

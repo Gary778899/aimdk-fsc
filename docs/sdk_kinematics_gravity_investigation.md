@@ -23,7 +23,7 @@
 | `src/aimdk_msgs/prebuilt_aarch64/local/lib/python3.10/dist-packages/aimdk_msgs/` 下 `.so` | Python 3.10 的 ROS 消息扩展 | 不提供模型求解 |
 | `src/ruckig/`；`ruckig::Ruckig::update()` | 关节轨迹生成；库形式由 `BUILD_SHARED_LIBS` 决定 | 输出位置／速度／加速度，不读取机器人质量或质心，不计算 IK／重力 |
 
-构建依据为 [消息构建入口](../src/aimdk_msgs/CMakeLists.txt)、[预编译选择逻辑](../src/aimdk_msgs/cmake/aimdk_msgs_prebuilt.cmake)、[Ruckig 构建入口](../src/ruckig/CMakeLists.txt) 和 [官方例程链接依赖](../src/examples/CMakeLists.txt)。后者没有链接厂家运动学／动力学算法库。
+构建依据为 [消息构建入口](../underlay/src/aimdk_msgs/CMakeLists.txt)、[预编译选择逻辑](../underlay/src/aimdk_msgs/cmake/aimdk_msgs_prebuilt.cmake)、[Ruckig 构建入口](../underlay/src/ruckig/CMakeLists.txt) 和 [官方例程链接依赖](../underlay/src/examples/CMakeLists.txt)。后者没有链接厂家运动学／动力学算法库。
 
 使用 `nm -D -C` 和 `readelf -d` 检查了工作区内 52 个 `.so`／`.a` 路径（含符号链接）。搜索覆盖 gravity、gravcomp、inverse kinematics／dynamics、pinocchio、rnea、MuJoCo 运动学／动力学函数等。未发现 `src/` 消息库含这些算法符号或相应直接依赖。符号缺失本身不能排除固件隐藏符号、静态链接或独立进程实现。
 
@@ -92,9 +92,9 @@ SDK 本地模型压缩包：[`X2_URDF.zip`](cn/_build/html/en/dev/_downloads/3f0
 
 直接证据：
 
-- [UpperBodyCommandArray.msg](../src/aimdk_msgs/interface/robot/mc/openapi/msg/UpperBodyCommandArray.msg) 和 [当前发布函数](../src/test/aimdk_test/arm_test_motion.py)；后者 `publish()` 仅构造位置和夹爪开度。
-- [JointCommand.msg](../src/aimdk_msgs/interface/robot/hal/msg/JointCommand.msg)；官方 [在线关节控制说明](https://x2-aimdk.agibot.com/zh-cn/dev/Interface/control_mod/joint_control.html) 标注 `effort` 为 N·m、刚度为 N·m/rad、阻尼为 N·m·s/rad。
-- [Python 底层例程](../src/py_examples/py_examples/motocontrol.py) 的 `JointControllerNode.control_callback()` 显式写 `j.effort = 0.0`；[C++ 底层例程](../src/examples/src/hal/motocontrol.cpp) 的 `SetTargetPosition()` 未赋非零前馈。只能据此说**例程没有显式计算重力前馈**，不能推断固件内部必然无补偿。
+- [UpperBodyCommandArray.msg](../underlay/src/aimdk_msgs/interface/robot/mc/openapi/msg/UpperBodyCommandArray.msg) 和 [当前发布函数](../overlay/src/test/aimdk_test/arm_test_motion.py)；后者 `publish()` 仅构造位置和夹爪开度。
+- [JointCommand.msg](../underlay/src/aimdk_msgs/interface/robot/hal/msg/JointCommand.msg)；官方 [在线关节控制说明](https://x2-aimdk.agibot.com/zh-cn/dev/Interface/control_mod/joint_control.html) 标注 `effort` 为 N·m、刚度为 N·m/rad、阻尼为 N·m·s/rad。
+- [Python 底层例程](../underlay/src/py_examples/py_examples/motocontrol.py) 的 `JointControllerNode.control_callback()` 显式写 `j.effort = 0.0`；[C++ 底层例程](../underlay/src/examples/src/hal/motocontrol.cpp) 的 `SetTargetPosition()` 未赋非零前馈。只能据此说**例程没有显式计算重力前馈**，不能推断固件内部必然无补偿。
 - [本地 Python 电机例程说明](cn/_build/html/zh-cn/dev/example/Python.html#py-motocontrol) 要求停止原生 MC；[官方在线 FAQ](https://x2-aimdk.agibot.com/zh-cn/dev/faq/index.html) 也给出同一要求，但该在线页面标题显示 1.0.0，不能单独充当固件 1.1.5 的能力证明。
 
 因此，不能在 URS 运行时另加 HAL publisher，把两个通道当成位置和前馈的自然叠加。也不能只修改本地 `.msg` 加一个 torque 字段，期待现有固件自动消费。

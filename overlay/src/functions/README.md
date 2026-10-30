@@ -8,16 +8,16 @@ ROS 2 包名为 `aimdk_functions`，使用 `ament_python`。目前提供音量�
 由用户同步工作区后，在机器人开发板的 Humble 容器中，从工作区根目录构建：
 
 ```bash
-source /opt/ros/humble/setup.bash
-colcon build --base-paths src --packages-up-to aimdk_functions aimdk_test
-source install/local_setup.bash
+bash scripts/build_overlay.sh aimdk_functions
+source /home/agi/aimdk/install/setup.bash
+source /home/agi/aimdk-fsc/install/local_setup.bash
 ros2 run aimdk_functions dual_arm_control --help
 ros2 run aimdk_functions volume_control get-volume
 ```
 
-如使用自定义构建、安装目录，沿用对应 colcon 参数并 source 对应安装目录。
+固定 underlay 使用其他安装目录时，构建前设置 `AIMDK_UNDERLAY_INSTALL`，运行时加载同一安装目录。
 本次功能整合只完成本地静态检查，尚未执行机器人容器构建或真机验收。
-原有实验已验证的结果见 [test.md](../../test.md)，不自动推广为新增七关节动作的验收结果。
+原有实验已验证的结果见 [历史实机记录](../../../docs/archive/dual_arm_test.md)，不自动推广为新增七关节动作的验收结果。
 
 ## SD / URS 重力补偿只读观测
 
@@ -158,8 +158,8 @@ ros2 run aimdk_functions dual_arm_control joint --side both --tag wrist_yaw \
 
 ### 关节限位依据
 
-范围参考随 SDK 提供的 [1.7.1 手臂可保证活动空间](../../docs/cn/_build/html/zh-cn/dev/about_agibot_X2/joint_name_and_limit.html)
-以及官方 [motocontrol.py](../py_examples/py_examples/motocontrol.py) 的各侧关节定义。
+范围参考随 SDK 提供的 [1.7.1 手臂可保证活动空间](../../../underlay/docs/cn/_build/html/zh-cn/dev/about_agibot_X2/joint_name_and_limit.html)
+以及官方 [motocontrol.py](../../../underlay/src/py_examples/py_examples/motocontrol.py) 的各侧关节定义。
 文档角度值按 0.5°舍入，且未分别列左右臂；右肩 roll、右腕 roll 的符号映射
 依据官方示例。程序取两份范围的交集，不附加旧肩实验中的 1°余量，也不将 HAL
 示例的命令通道、增益或 Ruckig 依赖带入本功能。
@@ -222,8 +222,8 @@ MC、手臂和夹爪的接收间隔、源时间停滞及源年龄上限均默认
 程序打印每个关节的目标、实测、实际增量与误差，不把“容差内确认”解释为精确运动了
 输入角度；本轮没有增加未经实测的更严格精度门槛。
 
-日志默认写入检测到的工作区 `log/dual_arm_control_*.jsonl`，探测依据为
-`src/functions/package.xml`，不依赖测试包。无法检测时用 `--log-dir`。
+日志默认写入检测到的工作区 `log/dual_arm_control_*.jsonl`，本地优先探测仓库内
+`overlay/src/functions/package.xml`，机器人端探测 `src/functions/package.xml`，不依赖测试包。无法检测时用 `--log-dir`。
 日志记录完整起点、目标、原始反馈、发布、模式查询和到位结果；最多缓存 20000 个事件，
 退出时写盘并记录被丢弃的旧事件数，因此不是无限时长的完整录制器。
 夹爪状态、速度、开度和故障字段保留在普通原始反馈日志中（约 10 Hz），
@@ -236,7 +236,7 @@ MC、手臂和夹爪的接收间隔、源时间停滞及源年龄上限均默认
 改用本文的 `aimdk_functions dual_arm_control joint/gripper`；旧固定肩抬升、
 开闭夹爪和返程串联流程不再提供。
 `head_test` 及 `arm_test` 的专项诊断留在测试包；后者的模式接管与交接试验不属于新命令。
-历史说明与已验证事实保存在 [迁移前说明](../../docs/archive/dual_arm_legacy_usage.md)。
+历史说明与已验证事实保存在 [迁移前说明](../../../docs/archive/dual_arm_legacy_usage.md)。
 
 新增入口需要在机器人容器内重新构建。rsync 对安装产物的保护性排除不会清除旧安装入口，
 仅同步源码或 symlink 安装不能保证旧命令消失。若 `ros2 pkg executables aimdk_test`
@@ -309,7 +309,7 @@ MC、手臂和夹爪的接收间隔、源时间停滞及源年龄上限均默认
 步骤三的只读验证命令见下节；最小单臂端点运动入口见文末。
 单臂平移直线离散IK及完整路径发送已实现；旋转目标与双臂同步尚未实现。
 补偿依赖单独存放，不接入默认目标或发送行为。
-来源、原始及适配文件哈希见 [提取记录](../../docs/x2_teleop_extraction.md)。
+来源、原始及适配文件哈希见 [提取记录](../../../docs/x2_teleop_extraction.md)。
 步骤一、二已有用户回传的容器构建与两个合成姿态的离线FK→IK→FK结果；
 后续实际反馈只读验证及运动执行结果分别记录在下节和直线入口说明中。
 
@@ -329,12 +329,13 @@ MC、手臂和夹爪的接收间隔、源时间停滞及源年龄上限均默认
 
 ```bash
 cd /home/agi/aimdk-fsc
-colcon build --base-paths src --packages-up-to aimdk_functions
-source install/setup.bash
+bash scripts/build_overlay.sh aimdk_functions
+source /home/agi/aimdk/install/setup.bash
+source /home/agi/aimdk-fsc/install/local_setup.bash
 ros2 run aimdk_functions upper_body_kinematics_check --help
 ```
 
-沿用实际环境的自定义构建/安装目录参数。首次保持当前已有稳定姿态，确保反馈节点
+固定 underlay 路径配置及首次迁移步骤见[根目录说明](../../../README.md)。首次保持当前已有稳定姿态，确保反馈节点
 正常运行，无需通过本命令改变姿态或模式。先采样一次，确认订阅和输入：
 
 ```bash
@@ -414,8 +415,9 @@ MoveJ式关节五次插值。它不是参考项目`Robot.moveJ()`的直接调用
 
 ```bash
 cd /home/agi/aimdk-fsc
-colcon build --base-paths src --packages-up-to aimdk_functions
-source install/setup.bash
+bash scripts/build_overlay.sh aimdk_functions
+source /home/agi/aimdk/install/setup.bash
+source /home/agi/aimdk-fsc/install/local_setup.bash
 ros2 run aimdk_functions upper_body_move --help
 ```
 
@@ -486,8 +488,9 @@ ros2 run aimdk_functions upper_body_move \
 同步后在机器人Humble/AimDK容器内构建：
 
 ```bash
-colcon build --base-paths src --packages-up-to aimdk_functions
-source install/setup.bash
+bash scripts/build_overlay.sh aimdk_functions
+source /home/agi/aimdk/install/setup.bash
+source /home/agi/aimdk-fsc/install/local_setup.bash
 ```
 
 先只读查看左臂torso +X 10mm、5秒的完整规划：
@@ -563,8 +566,9 @@ IMU/腰源时间差记录为观测量，不宣称硬件同步，也不新增时�
 复用既有同步任务后，在机器人Humble/AimDK容器构建：
 
 ```bash
-colcon build --base-paths src --packages-up-to aimdk_functions
-source install/setup.bash
+bash scripts/build_overlay.sh aimdk_functions
+source /home/agi/aimdk/install/setup.bash
+source /home/agi/aimdk-fsc/install/local_setup.bash
 ```
 
 先只读查看与前轮相同的小范围动作；以下示例只计算URDF臂连杆重力，

@@ -12,18 +12,18 @@
 
 ## 2. 话题清单与接口依据
 
-[topics_and_services](../topics_and_services) 提供候选名称，但混合了话题与服务、也包含通配路径，不能直接作为完整且已验证的录制配置。下表结合当前 SDK 消息定义、官方示例和随 SDK 提供的本地接口文档核对；“源码确认”不等于实际机器人已发布，部署时仍核对实际类型和 QoS。
+[topics_and_services](../underlay/topics_and_services) 提供候选名称，但混合了话题与服务、也包含通配路径，不能直接作为完整且已验证的录制配置。下表结合当前 SDK 消息定义、官方示例和随 SDK 提供的本地接口文档核对；“源码确认”不等于实际机器人已发布，部署时仍核对实际类型和 QoS。
 
 | 官方话题 | 类型 | 首版配置建议 | 用途与依据 |
 | --- | --- | --- | --- |
-| `/aima/hal/joint/arm/state` | `aimdk_msgs/msg/JointStateArray` | 默认启用，必需流 | 双臂名称、位置、速度、effort、错误和消息头；[关节示例](../src/py_examples/py_examples/motocontrol.py) 列出关节组输入，消息见 [JointStateArray](../src/aimdk_msgs/interface/robot/hal/msg/JointStateArray.msg) |
-| `/aima/hal/joint/hand/state` | `aimdk_msgs/msg/HandStateArray` | 默认启用，必需流 | 左右手型、夹爪／灵巧手数组、故障及触觉字段；[官方手部示例](../src/py_examples/py_examples/omnihand_touch.py)、[消息定义](../src/aimdk_msgs/interface/robot/hal/msg/HandStateArray.msg) |
-| `/aima/mc/common/state` | `aimdk_msgs/msg/McCommonState` | 默认启用，必需流 | 输入源、action、姿态、FSM 和运行状态；候选清单、本地 `mc_status.html` 及 [消息定义](../src/aimdk_msgs/interface/robot/mc/data/msg/McCommonState.msg) |
-| `/mc/upper_body_command` | `aimdk_msgs/msg/UpperBodyCommandArray` | 默认启用，按事件记录，可在命令跟踪实验中设为必需 | 实际发布的头、双臂、手部目标及 source；[官方上肢示例](../src/py_examples/py_examples/upper_body_control.py)、[消息定义](../src/aimdk_msgs/interface/robot/mc/openapi/msg/UpperBodyCommandArray.msg) |
+| `/aima/hal/joint/arm/state` | `aimdk_msgs/msg/JointStateArray` | 默认启用，必需流 | 双臂名称、位置、速度、effort、错误和消息头；[关节示例](../underlay/src/py_examples/py_examples/motocontrol.py) 列出关节组输入，消息见 [JointStateArray](../underlay/src/aimdk_msgs/interface/robot/hal/msg/JointStateArray.msg) |
+| `/aima/hal/joint/hand/state` | `aimdk_msgs/msg/HandStateArray` | 默认启用，必需流 | 左右手型、夹爪／灵巧手数组、故障及触觉字段；[官方手部示例](../underlay/src/py_examples/py_examples/omnihand_touch.py)、[消息定义](../underlay/src/aimdk_msgs/interface/robot/hal/msg/HandStateArray.msg) |
+| `/aima/mc/common/state` | `aimdk_msgs/msg/McCommonState` | 默认启用，必需流 | 输入源、action、姿态、FSM 和运行状态；候选清单、本地 `mc_status.html` 及 [消息定义](../underlay/src/aimdk_msgs/interface/robot/mc/data/msg/McCommonState.msg) |
+| `/mc/upper_body_command` | `aimdk_msgs/msg/UpperBodyCommandArray` | 默认启用，按事件记录，可在命令跟踪实验中设为必需 | 实际发布的头、双臂、手部目标及 source；[官方上肢示例](../underlay/src/py_examples/py_examples/upper_body_control.py)、[消息定义](../underlay/src/aimdk_msgs/interface/robot/mc/openapi/msg/UpperBodyCommandArray.msg) |
 | `/aima/hal/joint/head/state` | `aimdk_msgs/msg/JointStateArray` | 默认启用，可选流 | 头部实验反馈；同一官方关节接口，不能假定所有机型均有两个有效头部关节 |
-| `/aima/hal/imu/chest/state` | `sensor_msgs/msg/Imu` | 默认关闭，按实验显式启用 | 原始胸部 IMU；[官方 IMU 示例](../src/py_examples/py_examples/echo_imu_data.py) |
+| `/aima/hal/imu/chest/state` | `sensor_msgs/msg/Imu` | 默认关闭，按实验显式启用 | 原始胸部 IMU；[官方 IMU 示例](../underlay/src/py_examples/py_examples/echo_imu_data.py) |
 | `/aima/hal/imu/torso/state` | `sensor_msgs/msg/Imu` | 默认关闭，按实验显式启用 | 原始 torso IMU；与胸部 IMU 不视为等价，不猜测外参 |
-| `/aima/hal/joint/hand/command` | `aimdk_msgs/msg/HandCommandArray` | 默认关闭，按需启用，可选事件流 | 记录实际存在的 HAL 手部命令；[官方手部示例](../src/py_examples/py_examples/hand_control.py)、[消息定义](../src/aimdk_msgs/interface/robot/hal/msg/HandCommandArray.msg)；启用记录不触发任何控制 |
+| `/aima/hal/joint/hand/command` | `aimdk_msgs/msg/HandCommandArray` | 默认关闭，按需启用，可选事件流 | 记录实际存在的 HAL 手部命令；[官方手部示例](../underlay/src/py_examples/py_examples/hand_control.py)、[消息定义](../underlay/src/aimdk_msgs/interface/robot/hal/msg/HandCommandArray.msg)；启用记录不触发任何控制 |
 | `/aima/hal/joint/waist/state`、`/aima/hal/joint/leg/state` | `aimdk_msgs/msg/JointStateArray` | 默认关闭，必要时作为姿态／扰动参考启用 | 官方关节接口扩展，不开展下半身策略控制，也不作为上肢采集启动前提 |
 
 “必需流”用于判断会话数据是否满足所选实验 profile，不意味着缺失时停止所有记录。命令话题在实验尚未执行时可以没有发布者，默认不据此认定采集器故障；需要命令－反馈对照的实验应将其声明为必需，并在会话结果中明确是否实际收到命令。
@@ -142,6 +142,6 @@ ZMQ START／STOP／STATUS ──→ 会话管理器 ──→ 接收门控／写
 
 ## 10. 接口依据
 
-- [官方关节示例](../src/py_examples/py_examples/motocontrol.py)、[官方上肢示例](../src/py_examples/py_examples/upper_body_control.py)、[官方手部反馈示例](../src/py_examples/py_examples/omnihand_touch.py)、[官方 IMU 示例](../src/py_examples/py_examples/echo_imu_data.py)。
-- [MessageHeader](../src/aimdk_msgs/interface/robot/common/msg/MessageHeader.msg)、[JointState](../src/aimdk_msgs/interface/robot/hal/msg/JointState.msg)、[HandState](../src/aimdk_msgs/interface/robot/hal/msg/HandState.msg) 及上文链接的数组与 MC 接口。
-- SDK 随附本地接口文档：`docs/cn/_build/html/zh-cn/dev/Interface/control_mod/` 中 `joint_control.html`、`mc_status.html`、`upper_body_control.html`、`endeffector.html`。此目录已被 Git 忽略，需从对应官方 SDK 资源恢复；文档约定仍须以在线环境核对。
+- [官方关节示例](../underlay/src/py_examples/py_examples/motocontrol.py)、[官方上肢示例](../underlay/src/py_examples/py_examples/upper_body_control.py)、[官方手部反馈示例](../underlay/src/py_examples/py_examples/omnihand_touch.py)、[官方 IMU 示例](../underlay/src/py_examples/py_examples/echo_imu_data.py)。
+- [MessageHeader](../underlay/src/aimdk_msgs/interface/robot/common/msg/MessageHeader.msg)、[JointState](../underlay/src/aimdk_msgs/interface/robot/hal/msg/JointState.msg)、[HandState](../underlay/src/aimdk_msgs/interface/robot/hal/msg/HandState.msg) 及上文链接的数组与 MC 接口。
+- SDK 随附本地接口文档：`underlay/docs/cn/_build/html/zh-cn/dev/Interface/control_mod/` 中 `joint_control.html`、`mc_status.html`、`upper_body_control.html`、`endeffector.html`。此目录已被 Git 忽略，需从对应官方 SDK 资源恢复；文档约定仍须以在线环境核对。

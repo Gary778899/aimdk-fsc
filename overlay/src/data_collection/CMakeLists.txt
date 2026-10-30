@@ -26,8 +26,10 @@ find_package(Threads REQUIRED)
 
 # 仅记录构建时可核实的版本；缺少源码仓库或版本文件时明确使用 unknown。
 set(COLLECTION_SDK_VERSION "unknown")
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../version")
-  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../version" COLLECTION_SDK_VERSION)
+set(AIMDK_SDK_VERSION_FILE "/home/agi/aimdk/version" CACHE FILEPATH
+  "Version file of the fixed SDK underlay used for this build")
+if(EXISTS "${AIMDK_SDK_VERSION_FILE}")
+  file(READ "${AIMDK_SDK_VERSION_FILE}" COLLECTION_SDK_VERSION)
   string(STRIP "${COLLECTION_SDK_VERSION}" COLLECTION_SDK_VERSION)
 endif()
 set(COLLECTION_CODE_VERSION "unknown")
