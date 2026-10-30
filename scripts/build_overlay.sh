@@ -5,6 +5,7 @@ set -eo pipefail
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     echo '用法：bash scripts/build_overlay.sh [aimdk_test aimdk_functions data_collection]'
     echo '不传包名时构建上述三个包；locomotion_wrapper 不参与构建。'
+    echo '默认使用 --symlink-install；已有 Python 模块修改后同步并重启命令即可生效。'
     echo 'AIMDK_UNDERLAY_INSTALL：固定 underlay 安装目录，默认 /home/agi/aimdk/install。'
     echo 'AIMDK_SDK_VERSION_FILE：SDK 版本文件，默认 underlay 安装目录同级的 version。'
     exit 0
@@ -44,5 +45,5 @@ fi
 source /opt/ros/humble/setup.bash
 source "$underlay_install/setup.bash"
 cd -- "$workspace"
-colcon build --base-paths src --packages-select "${packages[@]}" \
+colcon build --symlink-install --base-paths src --packages-select "${packages[@]}" \
     --cmake-args "-DAIMDK_SDK_VERSION_FILE:FILEPATH=$sdk_version_file"

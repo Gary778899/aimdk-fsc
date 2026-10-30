@@ -8,7 +8,7 @@ import sys
 
 # 默认清理数据和日志；全量清理时增加项目目录，不跟随目录内的符号链接。
 REMOTE_SCRIPT = r'''set -euo pipefail
-roots=(/home/agi/data-fsc /home/agi/aimdk-fsc/log)
+roots=(/home/agi/aimdk-fsc/data /home/agi/aimdk-fsc/log)
 if [[ "$2" == '--all' ]]; then
     roots+=(/home/agi/aimdk-fsc)
 fi
@@ -39,7 +39,7 @@ def main():
     """解析本地命令并调用 SSH；返回远程命令退出码，启动失败时返回 1。"""
     parser = argparse.ArgumentParser(
         description=(
-            "通过 SSH 清空 /home/agi/data-fsc 和 /home/agi/aimdk-fsc/log，"
+            "通过 SSH 清空 /home/agi/aimdk-fsc/data 和 /home/agi/aimdk-fsc/log，"
             "添加 --all 同时清空 /home/agi/aimdk-fsc。默认仅预览。"
         ),
         epilog=(

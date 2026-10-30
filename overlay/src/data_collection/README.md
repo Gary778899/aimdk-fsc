@@ -115,11 +115,11 @@ CMake 只检查依赖，不自动下载或安装。消息依赖来自固定 unde
 
 ## 启动与录制
 
-先选择容器内**已确认持久化、可写、位于同步工作区之外**的数据根目录。下面的 `/ABSOLUTE/PERSISTENT/DATA_DIR` 是占位符，必须替换为实际绝对路径。当前 rsync 使用 `--delete`，工作区内的 `rosbags/` 未受同步排除保护。
+数据根目录使用 `/home/agi/aimdk-fsc/data`，通过项目目录挂载持久化到机器人宿主机，并受同步任务的 `/data/` 排除规则保护。启动前确认目录可写；远程清理脚本默认清空其中内容，`--all` 会连同整个项目内容一起删除。
 
 ```bash
 ros2 launch data_collection data_collection.launch.py \
-  data_root:=/home/agi/data-fsc
+  data_root:=/home/agi/aimdk-fsc/data
 ```
 
 节点启动后等待控制指令，不自动录制。在同一容器的另一个终端加载相同 ROS／工作区环境，再执行：

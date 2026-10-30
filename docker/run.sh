@@ -111,7 +111,6 @@ m /home/agi/.aima/env/ros_dds_configuration.xml /etc/ros_dds_configuration.xml
 # ---- single fixed mount: the SDK dir is always present and must be rw ----
 m /home/agi/aimdk /home/agi/aimdk rw
 m /home/agi/aimdk-fsc /home/agi/aimdk-fsc rw
-m /home/agi/data-fsc /home/agi/data-fsc rw
 
 echo "starting $NAME from $IMAGE..."
 podman run -d --name "$NAME" \

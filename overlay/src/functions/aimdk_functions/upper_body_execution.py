@@ -4,9 +4,13 @@ from dataclasses import asdict
 import time
 import math
 
-from .dual_arm_control_core import ARM_POSITION_TOLERANCE, ControlFailure, check_arm, interpolate
+from .dual_arm_control_core import ControlFailure, check_arm, interpolate
 from .upper_body_ros import UpperBodyFeedbackPort, build_upper_body_command
 from .upper_body_control_core import validate_target
+
+
+ARM_TRACKING_TOLERANCE = math.radians(5)
+ARM_ENDPOINT_TOLERANCE = math.radians(5)
 
 
 class UpperBodyExecutor:
@@ -117,7 +121,7 @@ class UpperBodyExecutor:
                 self.captured, ideal, values, blend)
         self.command_target = target
         validate_target(self.captured, target, self.options)
-        check_arm(values['arm'].positions, target.arm_rad)
+        check_arm(values['arm'].positions, target.arm_rad, tolerance=ARM_TRACKING_TOLERANCE)
         # 双侧计算完成后再次校验时效，并以实际发送时刻检查既有间隔。
         self.feedback.checked()
         msg = build_upper_body_command(self.node, target, self.sequence % (2 ** 32))
@@ -140,7 +144,7 @@ class UpperBodyExecutor:
                                 calculation_seconds=sent_at-now)
 
     def execute(self, captured, target, trajectory):
-        """执行一次完整轨迹，终点新反馈在既有3度容差内持续0.3秒；额外最多2秒，不以夹爪状态判定到位。
+        """以5度跟踪容差执行完整轨迹，终点新反馈在5度容差内持续0.3秒；额外最多2秒。
 
         trajectory提供同一时间网格的完整目标；夹爪仅更新开度并持续发送。
         """
@@ -153,7 +157,8 @@ class UpperBodyExecutor:
         self.command_target = trajectory.at(0.)
         self.diagnostics.record('motion_begin', origin_rad=list(captured.arm_rad),
                                 target_rad=list(target.arm_rad), duration_s=self.options.duration,
-                                tracking_tolerance_deg=math.degrees(ARM_POSITION_TOLERANCE),
+                                tracking_tolerance_deg=math.degrees(ARM_TRACKING_TOLERANCE),
+                                endpoint_tolerance_deg=math.degrees(ARM_ENDPOINT_TOLERANCE),
                                 settling_timeout_s=2., endpoint_stable_s=.3,
                                 interpolation=trajectory.kind,
                                 ideal_cartesian_straight_line=trajectory.kind == 'line',
@@ -163,7 +168,7 @@ class UpperBodyExecutor:
             values = self.spin()
             now = time.monotonic()
             expected = self.last_sent if self.last_sent is not None else captured
-            check_arm(values['arm'].positions, expected.arm_rad)
+            check_arm(values['arm'].positions, expected.arm_rad, tolerance=ARM_TRACKING_TOLERANCE)
             if now >= arrival:
                 newer = (self.last_sent is not None and self.last_elapsed >= self.options.duration
                          and self.last_sent.hand_openings == target.hand_openings) and all(
@@ -173,7 +178,7 @@ class UpperBodyExecutor:
                 if self.compensation is not None:
                     newer = (newer and self.last_sent_compensation is not None
                              and self.last_sent_compensation['blend'] == 1.)
-                reached = all(abs(actual - desired) <= ARM_POSITION_TOLERANCE
+                reached = all(abs(actual - desired) <= ARM_ENDPOINT_TOLERANCE
                               for actual, desired in zip(values['arm'].positions, expected.arm_rad))
                 stable_since = (stable_since if stable_since is not None else now) if newer and reached else None
                 if stable_since is not None and now - stable_since >= .3:

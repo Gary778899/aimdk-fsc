@@ -170,6 +170,23 @@ def main(args=None):
         print(f'日志：{diagnostics.path}', flush=True)
         print(f'动作={options.action}，侧别={options.side}，补偿={options.compensation}，'
               f'时长={options.duration:g}s；夹爪状态/静止门槛关闭，故障检查保留。', flush=True)
+        import rclpy
+        from rclpy.signals import SignalHandlerOptions
+
+        rclpy.init(args=[], signal_handler_options=SignalHandlerOptions.NO)
+        initialized = True
+        node = rclpy.create_node('upper_body_control')
+        if node.get_parameter('use_sim_time').value:
+            raise ControlFailure('本命令仅用于真机，不支持use_sim_time')
+        # 节点就绪后立即订阅，模式查询中的spin也会记录原始关节反馈。
+        port = UpperBodyExecutor(rclpy, node, options, diagnostics)
+        diagnostics.record('feedback_subscription_ready', streams=list(port.feedback.streams))
+        if options.execute:
+            from aimdk_msgs.srv import GetMcAction
+
+            client = node.create_client(GetMcAction, '/aimdk_5Fmsgs/srv/GetMcAction')
+            confirm_initial_mode(rclpy, node, options, diagnostics, client)
+        values = port.capture()
         arms = {side: ArmKinematics(side, tcp_mode='none') for side in selected_sides(options.side)
                 if options.action == 'tcp' or options.compensation}
         compensation = None
@@ -183,22 +200,10 @@ def main(args=None):
             diagnostics.record('compensation_config', arms={side: calc.describe()
                                                             for side, calc in calculators.items()})
             print('补偿刚度40 N·m/rad，偏置限幅±12°，随运动五次进度从零引入。', flush=True)
-        import rclpy
-        from rclpy.signals import SignalHandlerOptions
-
-        rclpy.init(args=[], signal_handler_options=SignalHandlerOptions.NO)
-        initialized = True
-        node = rclpy.create_node('upper_body_control')
-        if node.get_parameter('use_sim_time').value:
-            raise ControlFailure('本命令仅用于真机，不支持use_sim_time')
-        if options.execute:
-            from aimdk_msgs.srv import GetMcAction
-
-            client = node.create_client(GetMcAction, '/aimdk_5Fmsgs/srv/GetMcAction')
-            confirm_initial_mode(rclpy, node, options, diagnostics, client)
-        port = UpperBodyExecutor(rclpy, node, options, diagnostics)
         port.compensation = compensation
-        values = port.capture()
+        if arms:
+            # 模型初始化后重新采样，规划起点及补偿输入使用初始化完成后的新反馈。
+            values = port.capture(refreshed_after=time.monotonic())
         captured = CapturedTarget(values['arm'].positions, values['hand'].positions)
         trajectory, reports = plan_motion(captured, options, arms)
         diagnostics.record('plan', kind=trajectory.kind, arms=reports,

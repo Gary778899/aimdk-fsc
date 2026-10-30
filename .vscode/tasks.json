@@ -11,7 +11,7 @@
                 "--itemize-changes",
                 "--human-readable",
                 "--info=progress2",
-                "agi@10.0.1.41:/home/agi/data-fsc/",
+                "agi@10.0.1.41:/home/agi/aimdk-fsc/data/",
                 "${workspaceFolder}/data/"
             ],
             "problemMatcher": [],
@@ -64,7 +64,6 @@
                 "--exclude=exports/",
                 "--exclude=/data/",
                 "--exclude=log/",
-                "--exclude=docker/",
                 "--exclude=/docs/",
                 "--exclude=.venv/",
                 "--exclude=build-humble/",
@@ -80,6 +79,7 @@
                 "--rsync-path=mkdir -p /home/agi/aimdk-fsc/ && rsync",
                 "${workspaceFolder}/overlay/./src/",
                 "${workspaceFolder}/./scripts/",
+                "${workspaceFolder}/./docker/",
                 "agi@10.0.1.41:/home/agi/aimdk-fsc/"
             ],
             "problemMatcher": [],
@@ -111,7 +111,6 @@
                 "--exclude=exports/",
                 "--exclude=/data/",
                 "--exclude=log/",
-                "--exclude=docker/",
                 "--exclude=/docs/",
                 "--exclude=.venv/",
                 "--exclude=build-humble/",
@@ -127,6 +126,7 @@
                 "--rsync-path=mkdir -p /home/agi/aimdk-fsc/ && rsync",
                 "${workspaceFolder}/overlay/./src/",
                 "${workspaceFolder}/./scripts/",
+                "${workspaceFolder}/./docker/",
                 "agi@10.0.1.41:/home/agi/aimdk-fsc/"
             ],
             "problemMatcher": [],

@@ -12,12 +12,13 @@ underlay/
 overlay/
   src/functions、test、data_collection、locomotion_wrapper
 scripts/       # 构建入口及本地远程清理工具
+docker/        # 容器镜像定义及启动脚本
 docs/          # 自研规划与实验记录
 data/、log/、exports/
 ```
 
 机器人端沿用 `/home/agi/aimdk` 作为固定厂商 underlay，
-`/home/agi/aimdk-fsc` 作为可清空的自研 overlay，路径不增加上述本地目录层级。
+`/home/agi/aimdk-fsc` 存放自研 overlay、容器脚本和采集数据，路径不增加上述本地目录层级。
 本地 `underlay/` 仅保留 SDK 副本供查阅，不参与日常同步。
 其中 `extra/` 保留 `COLCON_IGNORE`，当前厂商包和自研包均不以它作为构建或运行依赖。
 固定 SDK 和本地副本应保持版本对应，升级 SDK 时重新核对并构建 underlay。
@@ -35,17 +36,19 @@ data/、log/、exports/
 当前目标为 `agi@10.0.1.41:/home/agi/aimdk-fsc/`，具体连接与参数以
 [.vscode/tasks.json](.vscode/tasks.json) 为准。
 两个任务使用 rsync `--relative` 的 `/./` 分界，将本地 `overlay/src/` 映射到
-机器人 `aimdk-fsc/src/`，将根目录 `scripts/` 映射到 `aimdk-fsc/scripts/`。
-只有这两个目录参与同步；厂商副本、`underlay/extra/`、本地研究文档和数据不会被推送。
-沿用 `--delete`，只清理目标 `src/`、`scripts/` 中本地已不存在且未被排除规则保护的内容。
+机器人 `aimdk-fsc/src/`，将根目录 `scripts/`、`docker/` 分别映射到同名目录。
+只有这三个目录参与同步；厂商副本、`underlay/extra/`、本地研究文档和数据不会被推送。
+沿用 `--delete`，只清理目标 `src/`、`scripts/`、`docker/` 中本地已不存在且未被排除规则保护的内容。
 保留现有数据、日志、构建产物等排除规则，以及对 `src/locomotion_wrapper/` 的排除，
 不使用 `--delete-excluded`。受保护的旧安装产物不会因推送自动清理。
 
 ### 2. 容器内构建与验证
 
 机器人宿主机的项目目录为 `/home/agi/aimdk-fsc`，通过目录绑定挂载至容器内同一路径；
-固定厂商目录 `/home/agi/aimdk` 和数据目录 `/home/agi/data-fsc` 也需在容器中同路径可见。
-现有 `docker/run.sh` 已包含这三处挂载；已有容器是否具备挂载以实际创建配置为准。
+固定厂商目录 `/home/agi/aimdk` 也需在容器中同路径可见。
+`docker/run.sh` 包含这两处挂载；数据目录 `/home/agi/aimdk-fsc/data` 复用项目挂载。
+已有容器是否具备挂载以实际创建配置为准，修改脚本不会更新已有容器的挂载。
+在宿主机执行 `bash /home/agi/aimdk-fsc/docker/run.sh` 可复用或创建容器。
 在机器人 Humble 容器内构建、运行和测试依赖 ROS 2、SDK 或硬件的代码。
 
 首次分层由用户停止自研程序、下载数据和日志，并清空机器人 `aimdk-fsc` 内容后再推送，
@@ -76,6 +79,11 @@ bash scripts/build_overlay.sh aimdk_functions
 入口 [build_overlay.sh](scripts/build_overlay.sh) 默认加载
 `/home/agi/aimdk/install/setup.bash`；通过环境变量 `AIMDK_UNDERLAY_INSTALL` 可指定其他安装目录。
 它使用 `--base-paths src --packages-select`，不递归构建厂商包，不接受 locomotion 或其他包名。
+默认启用 `--symlink-install`。首次构建成功后，修改 `aimdk_test`、`aimdk_functions`
+已有 Python 模块，只需推送工作区并重启对应命令；运行中的进程需先退出再同步。
+新增、删除模块，修改 `setup.py`、命令入口、依赖或安装资源，以及修改 C++ 代码后，重新构建对应包。
+切换安装方式后须完成一次构建；若提示旧安装文件与符号链接冲突，清理报错包对应的
+`build/<包名>`、`install/<包名>` 后重建，保留源码、数据和日志。
 采集器 SDK 版本从 underlay 安装目录同级 `version` 读取，可用 `AIMDK_SDK_VERSION_FILE`
 指定真实版本文件；缺失时记录 `unknown`，不使用本地副本冒充机器人 SDK 版本。
 脚本不自动安装依赖或构建 underlay，三个自研包可按实际依赖就绪情况分别构建。
@@ -107,7 +115,7 @@ ros2 run aimdk_functions upper_body_control --help
 2. 在本地 VS Code 按需运行 `机器人：下载采集数据` 和 `机器人：下载日志`；清理前应完成所需数据及日志的下载。
 3. 确认各任务正常结束，核对本地会话文件和日志，必要时读回数据。
 
-`机器人：下载采集数据` 将 `agi@10.0.1.41:/home/agi/data-fsc/` 内的内容单向下载到
+`机器人：下载采集数据` 将 `agi@10.0.1.41:/home/agi/aimdk-fsc/data/` 内的内容单向下载到
 当前项目根目录的 `data/`，目录不存在时会创建。
 `机器人：下载日志` 将 `agi@10.0.1.41:/home/agi/aimdk-fsc/log/` 内的全部内容
 单向下载到本地 `log/`，包括双臂控制 JSONL 日志及该目录内的构建、调试和验证日志。
@@ -122,10 +130,10 @@ ros2 run aimdk_functions upper_body_control --help
 确认所需数据和日志已下载并核对，且没有自研节点继续使用相关目录后，
 在本地项目根目录使用下文的清理命令：先预览，核对后再添加 `--execute` 实际清理。
 
-脚本默认通过 SSH 在机器人宿主机清空 `/home/agi/data-fsc` 和 `/home/agi/aimdk-fsc/log`
+脚本默认通过 SSH 在机器人宿主机清空 `/home/agi/aimdk-fsc/data` 和 `/home/agi/aimdk-fsc/log`
 的全部内容，包括隐藏文件，保留目录本身及权限。
 添加 `--all` 时清理上述两处及整个 `/home/agi/aimdk-fsc`，包括源码、`build/`、`install/`
-等内容；保留项目和数据根目录，项目内的 `log/` 目录也会被删除。
+等内容；保留项目根目录，项目内的 `data/`、`log/` 目录也会被删除。
 绑定挂载使清理结果同时反映到容器内，无需进入、停止或删除容器。
 
 下载与清理独立运行；脚本不检查下载结果、不停止节点、不自动使用 sudo。
@@ -137,7 +145,7 @@ ros2 run aimdk_functions upper_body_control --help
 如果使用了 `--all`，下次重新同步后只需运行 `bash scripts/build_overlay.sh` 构建自研包，
 再加载 underlay 和 overlay 环境运行。`/home/agi/aimdk` 不在清理范围内，厂商包无需重建；
 通常无需重新构建镜像或重新创建容器。
-全量清理会删除 `log/`，在它重新生成前重复运行现有清理脚本会因目录不存在而拒绝执行，
+全量清理会删除 `data/`、`log/`，在两者重新生成前重复运行现有清理脚本会因目录不存在而拒绝执行，
 本轮保留这一既有检查行为。
 
 连接地址变更时，同时更新 `.vscode/tasks.json` 和 `scripts/robot_cleanup.py`。

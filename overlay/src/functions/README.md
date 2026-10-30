@@ -182,13 +182,17 @@ ros2 run aimdk_functions upper_body_control gripper --side both \
 ROS时钟停滞上限沿用0.2秒。仅命令使用当前ROS时间，不改写反馈源时间。
 反馈QoS沿用best_effort/transient_local，补偿传感器best_effort/volatile，发布深度10。
 
-发布50Hz，间隔上限80ms；全部关节跟踪与终点容差±3°，终点新反馈连续确认0.3秒，
+发布50Hz，间隔上限80ms；全部关节跟踪容差±5°，终点容差±5°，终点新反馈连续确认0.3秒，
 轨迹或夹爪持续发送结束后额外最多等待2秒。终点须已实际发布完整目标，补偿进度达到1。
 到位比较对象为实际发送目标，原理想轨迹和反馈FK另行记录。
-小于3°的动作可能在实际运动很小时满足确认，不能据此认定精确执行了输入增量。
+执行前的起点漂移校验容差保持±3°；日志分别记录跟踪与终点容差。
+不超过5°的动作可能在实际运动很小时满足确认，不能据此认定精确执行了输入增量。
 `--timeout`还用于启动反馈、服务发现/响应与DDS匹配的各自有界等待。
 
 日志默认在自动探测的工作区 `log/upper_body_*.jsonl`，失败时用 `--log-dir`明确指定。
+ROS节点创建后立即建立反馈订阅，先于模式查询和运动学模型初始化；收到反馈即写入日志。
+`feedback_subscription_ready`标记订阅就绪，首条`feedback`标记实际开始收到数据。
+首次接收仍取决于ROS初始化与DDS发现；规划计算期间按现有单线程回调处理，不保证连续无丢帧采集。
 按事件增量写入并flush，包含完整原始反馈与时间、代码/模型哈希、限位、请求、分侧IK/SEW/分支、
 路径残差、补偿参数/偏置/源时间、理想与实际发送目标、周期耗时、反馈FK及退出原因。
 未知SDK/固件版本标记unknown，真实版本由操作者核对。日志复用现有“机器人：下载日志”任务。
@@ -218,6 +222,62 @@ probe保存metadata、图快照、原始events、summary与report；其退出码
 不作为补偿有效性结论。详细字段和历史记录见[整理前说明](../../../docs/archive/upper_body_commands_before_unification_20261030.md)。
 
 ## 机器人端验收与待办
+
+### 交互式验收记录
+
+`upper_body_acceptance`用于收集[遥操第一阶段](../../../docs/dev_teleop_part1.md)前五步的证据。
+新增入口后须在机器人Humble容器内重新构建一次：
+
+```bash
+bash scripts/build_overlay.sh aimdk_functions
+source /home/agi/aimdk/install/setup.bash
+source /home/agi/aimdk-fsc/install/local_setup.bash
+ros2 run aimdk_functions upper_body_acceptance
+```
+
+脚本逐项询问：`p`执行只读预览，`s`或默认输入跳过；预览成功后输入完整的`EXECUTE`
+执行一次单程动作。每次执行独立确认，不自动返程。正反向请求均相对当次采样起点，
+不构成位置恢复。先退出正在运行的控制命令再同步代码。
+运动前由操作者进入URS/RUNNING并确认动作空间和发布者；具体约定沿用上文。
+
+| 步骤 | 脚本收集内容 |
+| --- | --- |
+| 1 | 安装包路径、代码/模型哈希、来源及限位报告，子命令help，参数非法值/混用/缺失/超限拒绝 |
+| 2 | 左右各三次实际快照FK→IK→FK，数学边界、越界和不可达用例；多姿态可分会话采集 |
+| 3 | 从保存快照离线生成左右平移、旋转、组合轨迹，每条5秒251点，逐帧记录及统计耗时、步长、残差 |
+| 4 | 左右七关节正反向、三个轴正反向直线、endpoint、夹爪、人工中断；补充双臂共用/独立关节、独立TCP及夹爪目标 |
+| 5 | 左右各三组补偿开关对照，记录实际负载、起点差异和现场测量；操作者每次手动恢复起点 |
+
+默认关节幅度2°、平移5mm；离线回放旋转1°绕初始TCP局部Z，平移沿torso X，
+组合轨迹共用五次进度。幅度可用`--joint-deg`、`--translation-mm`、`--rotation-deg`
+设置，配对次数用`--repeats`设置。较小动作仍需独立测量实际增量。
+纯旋转及完整位姿实机请求尚无统一入口，步骤4保留未完成；双臂独立负载和故障/断流注入需另行补充。
+
+按阶段运行或使用已有实际快照回放：
+
+```bash
+ros2 run aimdk_functions upper_body_acceptance --steps 1 2 3
+ros2 run aimdk_functions upper_body_acceptance --steps 4 --joint-deg 2 --translation-mm 5
+ros2 run aimdk_functions upper_body_acceptance --steps 5 --repeats 3
+ros2 run aimdk_functions upper_body_acceptance --steps 3 --snapshot-log /实际路径/upper_body_快照.jsonl
+```
+
+默认输出至工作区`log/upper_body_acceptance_<时间>_<随机标识>/`，可用`--log-dir`指定父目录。
+现有“机器人：下载日志”任务可下载整个会话。目录包含`report.md`、`report.json`、
+逐用例终端输出、控制器原始JSONL和离线逐帧JSONL。每项完成即保存，中断保留已有证据；
+可在新会话中用`--steps`补充验证，最终审阅同时引用各会话目录。
+
+运行中可在另一终端查看用例目录的`console.txt`。执行时Ctrl+C转发给控制命令并保留中断记录，
+交互提示时Ctrl+D结束会话。日志的`commands_stopped`表示本脚本停发，实体保持及固件超时表现由现场记录。
+
+`report.json`保存各关节实际增量、发送目标/理想目标终点误差、接收时跟踪误差、
+发布间隔与计算耗时分布、补偿偏置及输入源时间差、反馈FK和原始错误。
+跟踪误差采用反馈接收前最近的已发送目标，仅作离线观测。执行结果分别记录自动证据与
+人工`pass/fail/pending`、独立测量及现场观察；分步审阅使用`accepted/incomplete/failed`。
+缺少完整证据时不能记录为accepted，步骤4因缺少旋转/完整位姿入口固定保留incomplete。
+会话退出码0表示报告正常保存，阶段验收由覆盖范围、现场测量和补偿适用结论共同评定。
+
+### 其他验收项目
 
 先按同一配置只读预览，再显式执行；记录实际姿态和负载。
 
