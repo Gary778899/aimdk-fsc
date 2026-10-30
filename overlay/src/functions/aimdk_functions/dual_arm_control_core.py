@@ -8,18 +8,6 @@ JOINT_TAGS = ('shoulder_pitch', 'shoulder_roll', 'shoulder_yaw', 'elbow',
 ARM_NAMES = tuple(f'{side}_{tag}_joint' for side in ('left', 'right') for tag in JOINT_TAGS)
 URS = 'UPPERBODY_REMOTE_SPLIT'
 ARM_POSITION_TOLERANCE = math.radians(3)
-# SDK 1.7.1 按 0.5 度舍入的活动范围；右侧 roll 的符号映射依据官方 motocontrol.py。
-DOCUMENT_LIMITS_DEG = ((-176.5, 116.5), (-3.5, 174.5), (-146.5, 146.5),
-                       (-135., 0.), (-146.5, 146.5), (-30., 30.), (-86.5, 41.5),
-                       (-176.5, 116.5), (-174.5, 3.5), (-146.5, 146.5),
-                       (-135., 0.), (-146.5, 146.5), (-30., 30.), (-41.5, 86.5))
-# 示例中更窄的边界不自动放宽；取文档范围与示例范围的交集，不附加任意余量。
-EXAMPLE_LIMITS_RAD = ((-3.08, 2.04), (-.061, 2.993), (-2.556, 2.556),
-                      (-2.3556, 0.), (-2.556, 2.556), (-.558, .558), (-1.571, .724),
-                      (-3.08, 2.04), (-2.993, .061), (-2.556, 2.556),
-                      (-2.3556, 0.), (-2.556, 2.556), (-.558, .558), (-.724, 1.571))
-JOINT_LIMITS_RAD = tuple((max(math.radians(a), c), min(math.radians(b), d))
-                         for (a, b), (c, d) in zip(DOCUMENT_LIMITS_DEG, EXAMPLE_LIMITS_RAD))
 
 
 class ControlFailure(RuntimeError):
@@ -208,6 +196,8 @@ def joint_target(start, tag, offsets):
     if (len(start) != 14 or not all(math.isfinite(v) for v in start)
             or tag not in JOINT_TAGS or len(offsets) != 2):
         raise ControlFailure('需要完整 14 关节有限起点、有效 tag 和左右增量')
+    from .upper_body_kinematics.parameters import EXECUTION_LIMITS_RAD
+
     result = list(start)
     for side_index, offset in enumerate(offsets):
         if offset is None:
@@ -215,7 +205,7 @@ def joint_target(start, tag, offsets):
         if not math.isfinite(offset) or abs(offset) > math.radians(10):
             raise ControlFailure('单次关节增量绝对值不得超过 10 度，且必须为有限数值')
         index = side_index * 7 + JOINT_TAGS.index(tag)
-        lower, upper = JOINT_LIMITS_RAD[index]
+        lower, upper = EXECUTION_LIMITS_RAD[index]
         target = start[index] + offset
         if not lower <= start[index] <= upper or not lower <= target <= upper:
             raise ControlFailure(f'{ARM_NAMES[index]} 起点 {math.degrees(start[index]):+.6f}° '

@@ -1,4 +1,4 @@
-"""包内只读反馈适配与完整命令组装；运动发布状态机留给单臂执行验证阶段。"""
+"""包内只读反馈适配与完整命令组装；运动发布状态机由统一执行器管理。"""
 
 from functools import partial
 import time
@@ -94,7 +94,7 @@ def build_upper_body_command(node, target, sequence):
     """由 CapturedTarget 组装原生完整左7右7 rad 及模式1夹爪消息，不发布。
 
     调用方仍须执行模式有界查询、反馈监视和发布前候选检查；本函数不授予运动许可。
-    target 应由固定采样的 for_arm() 生成；sequence 为 uint32 范围内整数序号。
+    target由统一规划/补偿层组装，并由执行器检查所选关节；sequence为uint32序号。
     """
     from aimdk_msgs.msg import UpperBodyCommandArray
 
@@ -107,7 +107,7 @@ def build_upper_body_command(node, target, sequence):
     msg.header.stamp = node.get_clock().now().to_msg()
     msg.header.frame_id = 'mc_upper_body'
     msg.header.sequence = sequence
-    msg.source = 'upper_body_cartesian'
+    msg.source = 'upper_body_control'
     msg.head_pos = [0., 0.]  # SDK 规定 URS 下头部目标无效。
     msg.arm_pos = list(target.arm_rad)
     msg.hand_sub_mode = UpperBodyCommandArray.HAND_CLAW_OPEN_CLOSE

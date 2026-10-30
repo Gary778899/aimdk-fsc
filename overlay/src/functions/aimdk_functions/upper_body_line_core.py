@@ -10,6 +10,7 @@ from .dual_arm_control_core import ControlFailure, interpolate
 from .upper_body_kinematics.adapter import ArmKinematics
 from .upper_body_kinematics.vendor.x2_arm_model import log3
 from .upper_body_move_core import MAX_JOINT_DELTA_RAD, plan_translation
+from .upper_body_cartesian_core import finite_positions
 
 
 @dataclass(frozen=True)
@@ -35,8 +36,10 @@ class LineTrajectory:
             self.targets[index].arm_rad, self.targets[index + 1].arm_rad))
 
 
-def plan_line(captured, side, axis, delta_mm, duration, *, arm=None):
+def plan_line(captured, side, axis, delta_mm, duration, *, arm=None, translation_mm=None):
     """返回完整目标、汇总报告和直线轨迹；距离为mm、时长为秒。
+
+    translation_mm可指定torso系XYZ毫米向量，优先于单轴输入。
 
     首点保留采样角；后续点以前一点关节/SEW求局部IK，首个非零点确定分支后锁定。
     无解、非有限、越界、分支改变或任一关节相对起点超过既有10度时抛出ControlFailure。
@@ -47,6 +50,12 @@ def plan_line(captured, side, axis, delta_mm, duration, *, arm=None):
         raise ControlFailure('直线轨迹时长须为5..10秒')
     arm = arm if arm is not None else ArmKinematics(side, tcp_mode='none')
     _, report = plan_translation(captured, side, axis, 0., arm=arm)
+    # 复用XYZ有限值检查；直线路径仍从实际采样关节开始。
+    if translation_mm is None:
+        displacement = np.zeros(3)
+        displacement[('x', 'y', 'z').index(axis)] = delta_mm
+    else:
+        displacement = np.asarray(finite_positions(translation_mm, 3, 'TCP位移mm'))
     if not math.isfinite(delta_mm):
         raise ControlFailure('直线位移须为有限毫米数值')
     offset = 0 if side == 'left' else 7
@@ -61,9 +70,9 @@ def plan_line(captured, side, axis, delta_mm, duration, *, arm=None):
     for index, seconds in enumerate(times):
         progress = interpolate((0.,), (1.,), seconds, duration)[0]
         requested = position.copy()
-        requested[('x', 'y', 'z').index(axis)] += delta_mm * progress / 1000.
+        requested += displacement * progress / 1000.
         current_branch = branch
-        if index == 0 or delta_mm == 0:
+        if index == 0 or not np.any(displacement):
             candidate = seed.copy()
         else:
             try:
@@ -100,7 +109,7 @@ def plan_line(captured, side, axis, delta_mm, duration, *, arm=None):
         targets.append(target)
         previous, branch = candidate.copy(), current_branch
     final = points[-1]
-    report.update(delta_mm=delta_mm, target_arm_rad=list(targets[-1].arm_rad),
+    report.update(delta_mm=delta_mm, translation_mm=displacement.tolist(), target_arm_rad=list(targets[-1].arm_rad),
                   requested_position_m=final['requested_position_m'],
                   target_position_m=final['target_position_m'],
                   position_residual_m=final['position_residual_m'],
@@ -110,7 +119,7 @@ def plan_line(captured, side, axis, delta_mm, duration, *, arm=None):
                   max_path_position_residual_m=max(p['position_residual_m'] for p in points),
                   max_path_rotation_residual_rad=max(p['rotation_residual_rad'] for p in points),
                   candidate_rad=previous.tolist(), sew_rad=psi, branch=branch,
-                  branch_locked=branch is not None, seed_preserved=delta_mm == 0,
+                  branch_locked=branch is not None, seed_preserved=not np.any(displacement),
                   path_type='cartesian_line_discrete_ik', point_count=len(points),
                   duration_s=duration, solve_seconds=time.perf_counter() - solve_began,
                   planning_seconds=time.perf_counter() - began)

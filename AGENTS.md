@@ -41,7 +41,7 @@
 | 官方示例 | `underlay/src/examples/` → `examples`；`underlay/src/py_examples/` → `py_examples` | C++／Python SDK 调用示例，用于理解接口；自研功能分别进入下述自研包，不把示例模块作为公共库。 |
 | 官方诊断工具 | `underlay/src/robotop/` → `robotop` | 官方 SDK 自带的终端状态、日志、通信与故障诊断工具，以及独立 Orin 资源监视节点；不承载自研采集或实验状态机。 |
 | 自研实验工具 | `overlay/src/test/` → `aimdk_test` | 头部、手臂诊断与运动实验。入口为 `aimdk_test/head_test.py`、`arm_test.py`；`*_core.py` 为无 ROS 导入的校验／算法核心，`arm_test_motion.py` 为手臂 ROS 执行适配，`head_test_diagnostics.py` 提供实验 JSONL 日志。这里的 `test` 是业务包目录，不是全工作区单元测试目录。 |
-| 自研功能命令 | `overlay/src/functions/` → `aimdk_functions` | 独立实用功能：`volume_control.py`（音量／静音）、`dual_arm_control.py`（URS 下单次关节增量／夹爪开度）。双臂纯计算与反馈校验在 `dual_arm_control_core.py`，日志在 `dual_arm_control_diagnostics.py`；不依赖测试包，也不作为所有公共代码的汇总包。 |
+| 自研功能命令 | `overlay/src/functions/` → `aimdk_functions` | 独立实用功能：`volume_control.py`（音量／静音）、`upper_body_control.py`（URS 下单臂／双臂关节、TCP及夹爪控制）。统一规划在 `upper_body_control_core.py`，执行在 `upper_body_execution.py`，反馈校验复用 `dual_arm_control_core.py`，日志在 `upper_body_diagnostics.py`；不依赖测试包，也不作为所有公共代码的汇总包。 |
 | 自研只读观测 | `overlay/src/locomotion_wrapper/` → `locomotion_wrapper` | 厂商关节状态聚合与标准 IMU 校验转发，不含运动控制或策略推理。节点在 `src/hardware_wrapper_node.cpp`，纯校验在 `include/locomotion_wrapper/state_validation.hpp`，配置在 `config/`，启动在 `launch/`，校验测试在 `test/`；`joint_watch.py` 仅监视标准关节状态。本轮不参与同步或构建。 |
 | 自研数据采集 | `overlay/src/data_collection/` → `data_collection` | 独立订阅 SDK 双臂／夹爪反馈，生成统一 JSONL 帧并可选录制原始 MCAP，通过 ZeroMQ START／STOP／STATUS 控制录制。节点在 `src/data_collection_node.cpp`；`launch/data_collection.launch.py` 单独启动采集器，`robot_data_collection.launch.py` 为同包内的启动别名。 |
 

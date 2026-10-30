@@ -15,15 +15,16 @@ from .upper_body_kinematics.vendor.x2_arm_model import log3
 MAX_JOINT_DELTA_RAD = math.radians(10.0)
 
 
-def plan_translation(captured, side, axis, delta_mm, *, arm=None):
+def plan_translation(captured, side, axis, delta_mm, *, arm=None, translation_mm=None):
     """从本次完整采样规划单臂在torso坐标轴上的平移端点，返回完整目标及诊断字典。
 
     captured为CapturedTarget，side为left/right，axis为x/y/z，delta_mm为有符号毫米增量。
     可传入同侧腕原点ArmKinematics复用模型；否则在本函数内构造。
-    零增量保留当前关节；其他目标以当前SEW作局部track，不进行全局搜索或投影。
+    translation_mm可指定torso系XYZ毫米向量，优先于单轴输入。零增量保留当前关节；其他目标以当前SEW作局部track，不进行全局搜索或投影。
     无解、输入无效、超限或任一关节总变化超过既有10°约定时抛出ControlFailure。
     返回目标供后续关节插值MoveJ使用，不保证实际TCP沿笛卡尔直线移动。
     """
+    # translation_mm为torso系XYZ位移；未提供时沿用axis/delta_mm。
     began = time.perf_counter()
     if not isinstance(captured, CapturedTarget):
         raise ControlFailure('规划起点必须为本次采样的CapturedTarget')
@@ -45,11 +46,16 @@ def plan_translation(captured, side, axis, delta_mm, *, arm=None):
     captured.for_arm(side, seed)
     start_position, start_rotation = arm.forward(seed)
     requested_position = start_position.copy()
-    requested_position[('x', 'y', 'z').index(axis)] += delta_mm / 1000.0
+    displacement = np.zeros(3)
+    if translation_mm is None:
+        displacement[('x', 'y', 'z').index(axis)] = delta_mm
+    else:
+        displacement = np.asarray(finite_positions(translation_mm, 3, 'TCP位移mm'))
+    requested_position += displacement / 1000.0
     requested_rotation = start_rotation.copy()
     seed_psi = float(arm.solver.sew_angle(seed))
     solve_began = time.perf_counter()
-    if delta_mm == 0.0:
+    if not np.any(displacement):
         # FK目标没有改变，当前关节本身就是一致解，不调用候选评分重排肩腕。
         candidate = seed.copy()
         psi = seed_psi
@@ -82,7 +88,7 @@ def plan_translation(captured, side, axis, delta_mm, *, arm=None):
             or not math.isfinite(position_residual) or not math.isfinite(rotation_residual)):
         raise ControlFailure('局部IK回算产生非有限位姿或残差')
     report = dict(
-        side=side, axis=axis, delta_mm=delta_mm, base_frame='torso_link', tcp_mode='none',
+        side=side, axis=axis, delta_mm=delta_mm, translation_mm=displacement.tolist(), base_frame='torso_link', tcp_mode='none',
         start_arm_rad=list(captured.arm_rad), target_arm_rad=list(target.arm_rad),
         arm_names=list(ARM_NAMES), joint_names=list(arm.model.joint_names),
         full_joint_delta_rad=[end - start for start, end in zip(captured.arm_rad, target.arm_rad)],
@@ -96,7 +102,7 @@ def plan_translation(captured, side, axis, delta_mm, *, arm=None):
         position_residual_m=position_residual, rotation_residual_rad=rotation_residual,
         seed_sew_rad=seed_psi, sew_rad=psi, branch=branch, branch_prev=None, branch_locked=False,
         solve_seconds=solve_seconds, planning_seconds=time.perf_counter() - began,
-        seed_preserved=delta_mm == 0.0, clamp_reach=False, fallback=False,
+        seed_preserved=not np.any(displacement), clamp_reach=False, fallback=False,
         compensation_enabled=False, path_type='joint_quintic_movej',
         residual_acceptance_threshold=None,
     )

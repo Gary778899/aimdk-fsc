@@ -1,4 +1,8 @@
-"""X2 Ultra v1.3.0 的模型资源、关节槽位及新执行器统一限位；不导入 ROS。"""
+"""X2 Ultra v1.3.0模型资源、槽位和统一执行限位；不导入ROS。
+
+执行限位采用参考项目x2ik 2.1.0范围，左肩roll下限减1°、右肩roll上限加1°。
+关节、TCP和补偿后的发送目标共用EXECUTION_LIMITS_RAD，不与旧SDK范围取交集。
+"""
 
 from dataclasses import dataclass
 import hashlib

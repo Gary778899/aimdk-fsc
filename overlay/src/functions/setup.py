@@ -26,11 +26,9 @@ setup(
     entry_points={
         'console_scripts': [
             'volume_control = aimdk_functions.volume_control:main',
-            'dual_arm_control = aimdk_functions.dual_arm_control:main',
+            'upper_body_control = aimdk_functions.upper_body_control:main',
             'arm_compensation_probe = aimdk_functions.arm_compensation_probe:main',
             'upper_body_kinematics_check = aimdk_functions.upper_body_kinematics_check:main',
-            'upper_body_move = aimdk_functions.upper_body_move:main',
-            'upper_body_line = aimdk_functions.upper_body_line:main',
         ],
     },
 )

@@ -87,7 +87,7 @@ source /home/agi/aimdk/install/setup.bash
 source /home/agi/aimdk-fsc/install/local_setup.bash
 ros2 pkg prefix aimdk_msgs
 ros2 pkg prefix aimdk_functions
-ros2 run aimdk_functions dual_arm_control --help
+ros2 run aimdk_functions upper_body_control --help
 ```
 
 两项 prefix 应分别指向固定 underlay 和 FSC overlay 的安装目录。
