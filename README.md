@@ -8,6 +8,7 @@
 underlay/
   src/aimdk_msgs、ruckig、examples、py_examples、robotop
   version、topics_and_services、run_docs.sh、docs/cn/
+  extra/       # 强化学习参考工程及补充模型，忽略Git、不同步、不构建
 overlay/
   src/functions、test、data_collection、locomotion_wrapper
 scripts/       # 构建入口及本地远程清理工具
@@ -18,6 +19,7 @@ data/、log/、exports/
 机器人端沿用 `/home/agi/aimdk` 作为固定厂商 underlay，
 `/home/agi/aimdk-fsc` 作为可清空的自研 overlay，路径不增加上述本地目录层级。
 本地 `underlay/` 仅保留 SDK 副本供查阅，不参与日常同步。
+其中 `extra/` 保留 `COLCON_IGNORE`，当前厂商包和自研包均不以它作为构建或运行依赖。
 固定 SDK 和本地副本应保持版本对应，升级 SDK 时重新核对并构建 underlay。
 `locomotion_wrapper` 保留在本地 overlay 中，本轮不推送、不构建。
 
@@ -34,7 +36,7 @@ data/、log/、exports/
 [.vscode/tasks.json](.vscode/tasks.json) 为准。
 两个任务使用 rsync `--relative` 的 `/./` 分界，将本地 `overlay/src/` 映射到
 机器人 `aimdk-fsc/src/`，将根目录 `scripts/` 映射到 `aimdk-fsc/scripts/`。
-只有这两个目录参与同步；厂商副本、`extra/`、本地研究文档和数据不会被推送。
+只有这两个目录参与同步；厂商副本、`underlay/extra/`、本地研究文档和数据不会被推送。
 沿用 `--delete`，只清理目标 `src/`、`scripts/` 中本地已不存在且未被排除规则保护的内容。
 保留现有数据、日志、构建产物等排除规则，以及对 `src/locomotion_wrapper/` 的排除，
 不使用 `--delete-excluded`。受保护的旧安装产物不会因推送自动清理。

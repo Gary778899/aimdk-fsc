@@ -20,7 +20,7 @@
 | --- | --- |
 | `module/x2ik-2.1.0-py3-none-any.whl` | `1881b32185fd116b4c23c9639c74e1edc962acc111b70405102151e5db1a6ec8` |
 | `module/x2ik-runtime-2.1.0.tar.gz` | `140883f2e35e54d79ae670a020ac27184e54e43ab0c28b40cd452defeb3ed823` |
-| 官方完整 `extra/X2_URDF-v1.3.0/x2_ultra.urdf` | `f628a969aaf3d5785b8c8901611a85f358d7eb62a8b06b1216dc42291a72944e` |
+| 官方完整 `underlay/extra/X2_URDF-v1.3.0/x2_ultra.urdf` | `f628a969aaf3d5785b8c8901611a85f358d7eb62a8b06b1216dc42291a72944e` |
 
 10个所选归档成员在wheel与runtime中逐字节相同，包括数学/TCP/补偿模块、TCP配置及参考URDF/MJCF。完整模型差异见[已有比对报告](x2_urdf_v1_3_comparison.md)，本轮不重复维护关节数值表。
 

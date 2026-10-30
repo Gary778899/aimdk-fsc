@@ -14,9 +14,9 @@
 
 | 对象 | 本次实际读取来源 |
 | --- | --- |
-| 官方完整 URDF | [`extra/X2_URDF-v1.3.0/x2_ultra.urdf`](../extra/X2_URDF-v1.3.0/x2_ultra.urdf) |
-| 官方 MJCF | [`extra/X2_URDF-v1.3.0/x2_ultra.xml`](../extra/X2_URDF-v1.3.0/x2_ultra.xml) |
-| 官方说明 | [`README_CN.md`](../extra/X2_URDF-v1.3.0/README_CN.md) 将 `x2_ultra.urdf` 列为完整模型；本次未将假拳或简化碰撞版本作为主基准 |
+| 官方完整 URDF | [`underlay/extra/X2_URDF-v1.3.0/x2_ultra.urdf`](../underlay/extra/X2_URDF-v1.3.0/x2_ultra.urdf) |
+| 官方 MJCF | [`underlay/extra/X2_URDF-v1.3.0/x2_ultra.xml`](../underlay/extra/X2_URDF-v1.3.0/x2_ultra.xml) |
+| 官方说明 | [`README_CN.md`](../underlay/extra/X2_URDF-v1.3.0/README_CN.md) 将 `x2_ultra.urdf` 列为完整模型；本次未将假拳或简化碰撞版本作为主基准 |
 | 参考项目 | `/home/gary/projects/Agibot-X2-IK-upper-body-control`，本地 Git HEAD `444598038cf0e5b27e32e3e5295ab24503ecd43f` |
 | 参考模型/源码 | `module/x2ik-2.1.0-py3-none-any.whl` 中 `x2ik/` 下文件，版本 `2.1.0` |
 | runtime 交叉核对 | `module/x2ik-runtime-2.1.0.tar.gz` 的 `runtime/x2ik/x2_ultra.urdf` 与 `x2_ultra.xml` 分别与 wheel 对应文件逐字节相同 |
@@ -127,7 +127,7 @@ SHA-256 用于固定本次比较对象；官方版本标识来自用户确认、
 
 | 位置 | 实际行为及适配含义 |
 | --- | --- |
-| `x2_arm_model.py:32`、`:258` | 默认读取同包 `x2_ultra.urdf` 与 `x2_ultra.xml`，并按左右关节名称建立模型；默认不会使用本项目 `extra/` 资源 |
+| `x2_arm_model.py:32`、`:258` | 默认读取同包 `x2_ultra.urdf` 与 `x2_ultra.xml`，并按左右关节名称建立模型；默认不会使用本项目 `underlay/extra/` 资源 |
 | `x2_arm_model.py:278` | URDF lower/upper 直接形成 `q_min/q_max`；effort、velocity 分别进入 `tau_max/dq_max` |
 | `x2_arm_model.py:283` | 解析 MJCF motor ctrlrange，与URDF effort取较小值得到 `tau_max_safe`；这不修改位置限位 |
 | `x2_arm_model.py:563`、`:566` | `clamp()` 直接裁剪至模型范围；`within_limits()` 使用模型范围及调用方容差 |

@@ -255,7 +255,7 @@ MC、手臂和夹爪的接收间隔、源时间停滞及源年龄上限均默认
 姿态矩阵将 TCP 坐标映射至 `torso_link`，位置 m、关节 rad；适配 API 不接收四元数，
 后续四元数接口统一约定 xyzw。求解和观测接口均不导入 ROS。
 
-`parameters.py` 固定包内完整官方 v1.3.0 URDF 及哈希；安装后不依赖 `extra/`
+`parameters.py` 固定包内完整官方 v1.3.0 URDF 及哈希；安装后不依赖 `underlay/extra/`
 或开发者绝对路径。URDF 保留网格引用但未附网格，只用于 XML 运动学，不能直接当成
 完整可视化或仿真资源包。`parameter_report()` 提供完整名称/索引/槽位/限位报告。
 

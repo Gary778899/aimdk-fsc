@@ -37,7 +37,7 @@ htmlcov/
 /underlay/docs/cn/_build/
 
 # 独立参考工程暂不纳入当前仓库，后续修改时单独评估。
-/extra/
+/underlay/extra/
 
 # 实验数据与导出结果；Git 忽略规则不会保护 rsync 目标端文件。
 /rosbags/

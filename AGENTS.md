@@ -26,7 +26,7 @@
 
 - `docs/`：研究规划、设计评审与实验记录。[research_plan.md](docs/research_plan.md) 是阶段目标与状态入口；`underlay/docs/cn/_build/html/` 为随 SDK 提供的本地接口文档；查阅时核对 SDK、固件与机型适用范围。
 - `docs/archive/`：历史设计、接口核实与实验记录。可用于追溯依据，但旧包名、命令、迁移方案和验证结果不直接作为当前用法或验收结论；当前入口优先查看对应包 README，并核对源码。
-- `extra/`：独立的强化学习参考工程；`mc-rl/` 包含训练、仿真验证和部署参考，`x2_rl_deploy/` 提供 ONNX 策略部署与 MuJoCo 示例。目录含 `COLCON_IGNORE`，其中还有另一份 `aimdk_msgs`；不属于当前 underlay／overlay 包集合，不将其依赖、模型或真机结论直接套用到当前工程。
+- `underlay/extra/`：独立参考工程与补充模型；`mc-rl/` 包含训练、仿真验证和部署参考，`x2_rl_deploy/` 提供 ONNX 策略部署与 MuJoCo 示例，`X2_URDF-v1.3.0/` 为补充官方模型。目录保留 `COLCON_IGNORE`，不纳入 Git、同步或构建，其中还有另一份 `aimdk_msgs`；当前厂商包与自研包不依赖此目录，不将其依赖、模型或真机结论直接套用到当前工程。
 - `underlay/`：本地厂商 SDK 工作空间副本，包含厂商包、版本文件、接口清单及 SDK 文档；供 AI 查阅，不参与日常同步。机器人固定 underlay 为 `/home/agi/aimdk`。
 - `overlay/`：本地自研工作空间，各包平铺于 `overlay/src/`；同步后在机器人 `/home/agi/aimdk-fsc/src/`，不增加 overlay 目录层级。
 - `scripts/`：机器人容器内的 overlay 构建入口，以及不依赖 ROS 2 的本地工具，如远程清理脚本。

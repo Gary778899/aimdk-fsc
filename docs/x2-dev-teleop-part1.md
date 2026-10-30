@@ -25,7 +25,7 @@
 | --- | --- |
 | 参考项目 | `/home/gary/projects/Agibot-X2-IK-upper-body-control`，提交 `444598038cf0e5b27e32e3e5295ab24503ecd43f`，`x2ik 2.1.0` |
 | 算法源码 | wheel 中的 `x2ik/`；runtime 中对应 URDF/MJCF 与 wheel 逐字节相同；`source/` 主要是桌面与标定工具 |
-| 本机模型 | `extra/X2_URDF-v1.3.0/x2_ultra.urdf`，按用户确认适配本机；使用完整模型作为主基准 |
+| 本机模型 | `underlay/extra/X2_URDF-v1.3.0/x2_ultra.urdf`，按用户确认适配本机；使用完整模型作为主基准 |
 | URDF 一致项 | 几何、轴向、拓扑、惯性、速度和 effort 一致，为继续提取 FK/IK 提供依据 |
 | URDF 差异 | 12 个关节位置范围不同；双臂涉及左右肩 roll、腕 pitch、腕 roll，共 6 个关节。参考肩 roll 更窄，腕部部分边界更宽 |
 | MJCF 差异 | 参考模型少 pelvis 显式惯性，13 个 motor 的 ctrlrange 不同；腕 pitch/roll 官方本次资源为 ±4.8，参考为 ±2.2，不能沿用参考源码中的历史版本注释 |

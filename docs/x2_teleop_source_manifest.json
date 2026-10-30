@@ -260,13 +260,13 @@
     "copy_status": "not_copied"
   },
   "official_model": {
-    "path": "extra/X2_URDF-v1.3.0/x2_ultra.urdf",
+    "path": "underlay/extra/X2_URDF-v1.3.0/x2_ultra.urdf",
     "sha256": "f628a969aaf3d5785b8c8901611a85f358d7eb62a8b06b1216dc42291a72944e",
     "model": "x2-ultra",
     "version": "v1.3.0",
     "declared_license": "MulanPSL2",
     "license_evidence": [
-      "extra/X2_URDF-v1.3.0/README_CN.md",
+      "underlay/extra/X2_URDF-v1.3.0/README_CN.md",
       "reference:THIRD_PARTY_NOTICES.txt"
     ],
     "note": "官方资源目录中的README指向../LICENSE，本地该路径不存在；完整MulanPSL2文本可见参考项目第三方声明。"

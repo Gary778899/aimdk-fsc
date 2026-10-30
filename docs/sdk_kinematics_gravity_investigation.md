@@ -7,7 +7,7 @@
 ## 1. 结论与证据范围
 
 1. **当前 `src/` SDK 没有找到可调用的厂家 IK 或重力补偿算法库、头文件、ROS 服务。** 发现的 12 个 `.so` 路径全部位于 `aimdk_msgs/prebuilt_aarch64/`，属于消息生成和类型支持。这个结论只覆盖本地交付物，不证明机器人固件没有内部算法。
-2. **`extra/` 的独立仿真工程确有可计算动力学的动态库：`libmujoco.so.3.3.7`。** 已静态确认其导出 `mj_rne`、`mj_inverse`、`mj_kinematics` 和雅可比函数。但它是 x86-64 仿真依赖，不能直接链接到机器人 aarch64 容器，也不是当前 AimDK 上肢控制的补偿 API。
+2. **`underlay/extra/` 的独立仿真工程确有可计算动力学的动态库：`libmujoco.so.3.3.7`。** 已静态确认其导出 `mj_rne`、`mj_inverse`、`mj_kinematics` 和雅可比函数。但它是 x86-64 仿真依赖，不能直接链接到机器人 aarch64 容器，也不是当前 AimDK 上肢控制的补偿 API。
 3. **当前上肢控制链路缺少外部力矩注入口。** `/mc/upper_body_command` 只有位置目标；HAL `JointCommand.effort` 提供力矩字段，但官方底层电机例程要求停止 MC，与本项目保留下半身原生运控的边界冲突。
 4. 随 SDK 文档交付的 `X2_URDF.zip` 已含质量、质心和惯量，可作为重力模型候选；压缩包同时包含 v1.3.0、v1.4.0 及不同末端版本，**必须先匹配实机，不能直接选最新文件**。
 5. 建议先实现或设计**只读重力估算**，同时向厂家确认原生补偿配置或兼容 URS 的力矩前馈扩展。当前接口下可研究位置偏差修正，但不能将其称为已经接通重力力矩补偿。
@@ -29,7 +29,7 @@
 
 ### 2.2 独立仿真参考工程：实际找到的算法库
 
-库位置：[`extra/x2_rl_deploy/x2_rl_deploy_mujoco/lib/libmujoco.so.3.3.7`](../extra/x2_rl_deploy/x2_rl_deploy_mujoco/lib/libmujoco.so.3.3.7)。`file` 显示为 x86-64 ELF；以下地址为本地文件 `nm -D` 输出中的符号值，不是运行时绝对地址。
+库位置：[`underlay/extra/x2_rl_deploy/x2_rl_deploy_mujoco/lib/libmujoco.so.3.3.7`](../underlay/extra/x2_rl_deploy/x2_rl_deploy_mujoco/lib/libmujoco.so.3.3.7)。`file` 显示为 x86-64 ELF；以下地址为本地文件 `nm -D` 输出中的符号值，不是运行时绝对地址。
 
 | 导出函数 | 符号值／类型 | 用途 |
 | --- | --- | --- |
@@ -46,9 +46,9 @@
 
 本地还存在 `libmujoco.so.3.3.8 -> libmujoco.so.3.3.7` 符号链接；名称不代表另一份 3.3.8 实现，更不能作为版本兼容证明。
 
-另一个易混淆的函数是 [参考控制器 `MotionControlNode::getGravityOrientation()`](../extra/x2_rl_deploy/x2_rl_deploy_controller/src/motion_control_node.cc)：它把姿态转为策略输入的三维重力方向，不使用质量／质心，不输出各关节 N·m，不能拿来当重力补偿。
+另一个易混淆的函数是 [参考控制器 `MotionControlNode::getGravityOrientation()`](../underlay/extra/x2_rl_deploy/x2_rl_deploy_controller/src/motion_control_node.cc)：它把姿态转为策略输入的三维重力方向，不使用质量／质心，不输出各关节 N·m，不能拿来当重力补偿。
 
-这些文件均在 `extra/`，受 `COLCON_IGNORE` 隔离，不作为当前 `src/` 包的已具备能力，也不建议直接增加对仿真插件的业务依赖。
+这些文件均在 `underlay/extra/`，受 `COLCON_IGNORE` 隔离，不作为当前 `src/` 包的已具备能力，也不建议直接增加对仿真插件的业务依赖。
 
 ### 2.3 可选的外部算法：Pinocchio
 
@@ -79,7 +79,7 @@ SDK 本地模型压缩包：[`X2_URDF.zip`](cn/_build/html/en/dev/_downloads/3f0
 
 `x2_ultra.urdf` 不只是几何模型：手臂 link 含 `<inertial>`、`<mass>`、质心 `<origin>` 和惯量张量。例如 v1.3.0 左肩 pitch link 质量为 `0.885896 kg`，质心为 `(0.003007, 0.050014, 0.000062) m`。这些是模型声明值，精度需要实测验证。
 
-`extra/mc-rl/x2_urdf/X2_URDF-v1.3.0/x2_ultra.urdf` 与 ZIP 内同名文件**字节不同**；XML 对比发现 12 个关节元素有差异，包括肩 roll、腕 pitch／roll、腰 yaw 等。即使目录版本号相同，也应固定模型来源和哈希，不从参考工程直接复制限位。
+`underlay/extra/mc-rl/x2_urdf/X2_URDF-v1.3.0/x2_ultra.urdf` 与 ZIP 内同名文件**字节不同**；XML 对比发现 12 个关节元素有差异，包括肩 roll、腕 pitch／roll、腰 yaw 等。即使目录版本号相同，也应固定模型来源和哈希，不从参考工程直接复制限位。
 
 官方 [本地坐标系说明](cn/_build/html/zh-cn/dev/about_agibot_X2/coordinate_system.html#urdf) 将 URDF 定义为标称模型，传感器出厂标定是另一类个体参数。关节模型、IMU 外参和当前姿态要分别处理；相机标定文件不能替代动力学参数。
 

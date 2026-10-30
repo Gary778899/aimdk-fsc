@@ -1,12 +1,12 @@
 {
   "model": "X2 Ultra",
   "version": "v1.3.0",
-  "source_workspace_path": "extra/X2_URDF-v1.3.0/x2_ultra.urdf",
+  "source_workspace_path": "underlay/extra/X2_URDF-v1.3.0/x2_ultra.urdf",
   "upstream_url": "https://github.com/AgibotTech/agibot_x2_urdf",
   "installed_filename": "x2_ultra_v1_3_0.urdf",
   "sha256": "f628a969aaf3d5785b8c8901611a85f358d7eb62a8b06b1216dc42291a72944e",
   "license": "MulanPSL-2.0",
-  "license_evidence": "extra/X2_URDF-v1.3.0/README_CN.md; license text retained from reference THIRD_PARTY_NOTICES.txt Model Data section",
+  "license_evidence": "underlay/extra/X2_URDF-v1.3.0/README_CN.md; license text retained from reference THIRD_PARTY_NOTICES.txt Model Data section",
   "changes": "none; byte-identical complete official URDF",
   "scope": "kinematics XML only; mesh references retained but mesh files not installed; not a visualization or simulation bundle"
 }
