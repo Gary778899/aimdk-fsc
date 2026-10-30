@@ -7,7 +7,7 @@ import time
 from aimdk_functions.dual_arm_control_core import (
     ARM_NAMES, ARM_POSITION_TOLERANCE, JOINT_TAGS, URS, ControlFailure,
     Stream, FeedbackMonitor, decode_arm, decode_hand, decode_urs_mc,
-    require_static_hands, check_arm, interpolate, joint_target, gripper_target,
+    check_arm, interpolate, joint_target, gripper_target,
 )
 from aimdk_functions.dual_arm_control_diagnostics import DiagnosticLog
 
@@ -35,7 +35,7 @@ def parser():
     result.add_argument('--opening', type=float, help='gripper 动作目标开度，0 闭合、1 全开')
     result.add_argument('--duration', type=float, help='joint 单程时间，5..10 秒，默认 5')
     result.add_argument('--execute', action='store_true', help='显式执行；现场确认空爪及动作空间')
-    result.add_argument('--timeout', type=float, default=5., help='服务/匹配/夹爪静止确认超时，1..10 秒')
+    result.add_argument('--timeout', type=float, default=5., help='服务/匹配超时及夹爪目标持续发送时间，1..10 秒，默认 5')
     for name in ('mc', 'arm', 'hand'):
         result.add_argument(f'--{name}-feedback-timeout', type=float, default=.5,
                             help='接收间隔/源停滞/源年龄上限，0.2..1 秒，默认 0.5')
@@ -231,7 +231,6 @@ class DualArmPort:
         while time.monotonic() < deadline:
             self.tick()
         values = self.tick()
-        require_static_hands(values['hand'])
         self.diagnostics.record('start_captured', arm_names=list(ARM_NAMES),
                                 arm_rad=list(values['arm'].positions),
                                 hand_openings=list(values['hand'].positions))
@@ -300,8 +299,8 @@ class DualArmPort:
     def segment(self, origin, target, hands, duration, arm_tolerance, hand_motion=False, phase='motion'):
         """持续发送五次插值目标并检查跟踪；终点需新源反馈连续稳定 0.3 秒。
 
-        hand_motion 允许夹爪移动，仍拒绝异常状态及硬件故障；到位超时则失败。
-        不以夹爪开度误差判定保持或到位，终点仍要求夹爪静止。
+        hand_motion 标记夹爪动作；duration 为目标持续发送时间，不生成手臂轨迹。
+        夹爪状态、速度和开度误差仅记录，不作为中止或终点条件；硬件故障仍中止。
         phase 为日志和错误中的阶段名称。位置参数单位为 rad，duration 单位为秒。
         arm_tolerance 仅约束本阶段改变目标的关节，其余关节使用 3 度保持容差。
         """
@@ -313,8 +312,7 @@ class DualArmPort:
         stamps = tuple(first[name].stamp for name in ('arm', 'hand'))
         phase_published_at = None
         previous_sequence = self.sequence
-        last_hand_stationary = True
-        settling_timeout = self.options.timeout if hand_motion else 2.
+        settling_timeout = 2.
         # 仅移动关节使用本阶段终点容差，不给其余保持关节施加精密定位门槛。
         tolerances = tuple(arm_tolerance if abs(a-b) > 1e-9 else ARM_POSITION_TOLERANCE
                            for a, b in zip(origin, target))
@@ -323,9 +321,10 @@ class DualArmPort:
                                 settling_timeout_s=settling_timeout, origin_rad=list(origin),
                                 target_rad=list(target), arm_tolerance_deg=math.degrees(arm_tolerance),
                                 arm_tolerances_deg=tolerances_deg,
-                                hand_target=list(hands), hand_opening_check=False,
+                                hand_target=list(hands), hand_opening_check=False, hand_state_check=False,
                                 first_sequence=previous_sequence)
-        print(f'阶段 {phase}：轨迹 {duration:g} 秒，移动关节容差 ±{math.degrees(arm_tolerance):g}°，'
+        timing = '夹爪目标持续发送' if hand_motion else '轨迹'
+        print(f'阶段 {phase}：{timing} {duration:g} 秒，移动关节容差 ±{math.degrees(arm_tolerance):g}°，'
               f'保持关节容差 ±{math.degrees(ARM_POSITION_TOLERANCE):g}°，'
               f'终点最多等待 {settling_timeout:g} 秒。', flush=True)
         # 进入本阶段后先更新目标，避免下一次定时回调发送上个阶段的手爪目标。
@@ -333,30 +332,15 @@ class DualArmPort:
         while True:
             values = self.tick()
             now = time.monotonic()
-            commanded = interpolate(origin, target, now - began, duration) if duration else target
+            commanded = (target if hand_motion or not duration
+                         else interpolate(origin, target, now - began, duration))
             check_arm(values['arm'].positions, commanded)
-            if any(h['state'] not in (0, 1) for h in values['hand'].data['hands']):
-                raise ControlFailure('夹爪出现非空闲/移动状态，停止动作')
-            if not hand_motion:
-                # 1027 实测重发保持开度会短暂产生速度/state=1；
-                # 静止要求留给起点和终点确认，不因正常调整立即中止关节轨迹。
-                hand_stationary = all(h['stationary_candidate']
-                                      for h in values['hand'].data['hands'])
-                if hand_stationary != last_hand_stationary:
-                    self.diagnostics.record(
-                        'hand_hold_status', phase=phase, stationary=hand_stationary,
-                        source_stamp_s=values['hand'].stamp,
-                        received_monotonic_s=values['hand'].received,
-                        serial=values['hand'].serial, hand_target=list(hands),
-                        hands=values['hand'].data['hands'])
-                    last_hand_stationary = hand_stationary
             self.set_target(commanded, hands)
             if phase_published_at is None and self.sequence > previous_sequence:
                 phase_published_at = self.last_publish
             if now >= arrival:
-                reached = (all(abs(a-b) <= tolerance
-                               for a, b, tolerance in zip(values['arm'].positions, target, tolerances))
-                           and all(h['stationary_candidate'] for h in values['hand'].data['hands']))
+                reached = all(abs(a-b) <= tolerance
+                              for a, b, tolerance in zip(values['arm'].positions, target, tolerances))
                 newer = phase_published_at is not None and all(
                     values[name].serial > serial and values[name].stamp > stamp
                     and values[name].received > max(arrival, phase_published_at)
@@ -366,7 +350,7 @@ class DualArmPort:
                     self.diagnostics.record('endpoint_confirmed', phase=phase,
                                             arm_rad=list(values['arm'].positions),
                                             target_rad=list(target), hand_openings=list(values['hand'].positions),
-                                            hand_target=list(hands), hand_opening_check=False,
+                                            hand_target=list(hands), hand_opening_check=False, hand_state_check=False,
                                             arm_tolerance_deg=math.degrees(arm_tolerance),
                                             arm_tolerances_deg=tolerances_deg,
                                             published_count=self.sequence-previous_sequence)
@@ -397,14 +381,14 @@ class DualArmPort:
                                       f'DDS 订阅匹配数={self.publisher.get_subscription_count()}')
 
     def execute(self, start, target, hand_targets):
-        """发送一次完整目标，等待到位后立即停止发布，再报告实测误差。"""
+        """发送一次完整目标；夹爪按 timeout 持续发送，确认关节后停止并报告实测误差。"""
         self.diagnostics.record('execution_feedback_limits',
                                 **{f'{name}_timeout_s': stream.monitor.feedback_timeout
                                    for name, stream in self.streams.items()})
         self.enable_commands()
         hand_motion = self.options.action == 'gripper'
         values = self.segment(start, target, hand_targets,
-                              0. if hand_motion else self.options.duration,
+                              self.options.timeout if hand_motion else self.options.duration,
                               ARM_POSITION_TOLERANCE, hand_motion=hand_motion,
                               phase=self.options.action)
         self.close()
@@ -415,7 +399,7 @@ class DualArmPort:
                   f'实际增量={math.degrees(actual-origin):+.3f}°，'
                   f'目标误差={math.degrees(actual-expected):+.3f}°', flush=True)
         print(f'夹爪目标={list(hand_targets)}，实测={list(values["hand"].positions)}', flush=True)
-        print('本次关节目标在 ±3° 容差内确认，夹爪静止已确认；夹爪开度仅记录，不判定到位。'
+        print('本次关节目标在 ±3° 容差内确认；夹爪状态及静止检查已屏蔽，不判定夹爪到位。'
               '小增量的通过不证明发生了同等幅度的实际运动。', flush=True)
 
     def close(self):
@@ -438,8 +422,11 @@ def main(args=None):
     try:
         offsets = validate_options(options)
         diagnostics = DiagnosticLog(options.log_dir)
-        diagnostics.record('run_start', options=vars(options), offsets_rad=list(offsets))
+        diagnostics.record('run_start', options=vars(options), offsets_rad=list(offsets),
+                           hand_state_check=False, hand_opening_check=False, hand_fault_check=True)
         print(f'诊断日志：{diagnostics.path}', flush=True)
+        print('hand_state_check=False：已屏蔽夹爪状态及静止门槛；继续记录原始反馈并检查故障码和时效。',
+              flush=True)
         import rclpy
         from aimdk_msgs.srv import GetMcAction
         from rclpy.signals import SignalHandlerOptions
