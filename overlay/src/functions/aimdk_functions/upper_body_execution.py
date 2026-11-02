@@ -7,6 +7,7 @@ import math
 from .dual_arm_control_core import ControlFailure, check_arm, interpolate
 from .upper_body_ros import UpperBodyFeedbackPort, build_upper_body_command
 from .upper_body_control_core import validate_target
+from .upper_body_cartesian_core import CapturedTarget
 
 
 ARM_TRACKING_TOLERANCE = math.radians(5)
@@ -19,9 +20,13 @@ class UpperBodyExecutor:
     def __init__(self, rclpy, node, options, diagnostics):
         """创建只读反馈适配，execute时持续监视URS；发布器延迟到enable_commands创建。"""
         self.rclpy, self.node, self.options, self.diagnostics = rclpy, node, options, diagnostics
+        # 共用执行器的只读遥操入口沿用实际反馈起点。
+        self.arm_start_source = getattr(options, 'arm_start_source', 'state')
         self.feedback = UpperBodyFeedbackPort(
             node, diagnostics, require_urs=options.execute,
-            feedback_timeout=options.feedback_timeout, compensation=options.compensation)
+            feedback_timeout=options.feedback_timeout, compensation=options.compensation,
+            arm_command=self.arm_start_source == 'mc-command')
+        self.start_feedback = self.start_command = None
         self.publisher = self.timer = self.command_target = None
         self.trajectory = self.began = None
         self.compensation = None
@@ -83,6 +88,33 @@ class UpperBodyExecutor:
                                      '（刷新要求源时间晚于刷新开始）'
                                      if source_after is not None else '等待完整且源时间推进的反馈超时')
 
+    def capture_target(self, values):
+        """冻结实际反馈与所选命令起点，返回完整规划目标；夹爪始终取实际开度。
+
+        values为capture返回的新鲜样本；命令与反馈的源时间差仅记录，不假定硬件同步。
+        """
+        self.start_feedback = values['arm'].positions
+        self.start_command = (values['arm_command'].positions
+                              if self.arm_start_source == 'mc-command' else None)
+        origin = self.start_command if self.start_command is not None else self.start_feedback
+        self.diagnostics.record(
+            'arm_start_reference', source=self.arm_start_source,
+            arm_rad=list(origin), actual_arm_rad=list(self.start_feedback),
+            command_minus_actual_rad=[a-b for a, b in zip(origin, self.start_feedback)],
+            state_stamp_s=values['arm'].stamp,
+            command_stamp_s=values['arm_command'].stamp if self.start_command is not None else None,
+            source_skew_s=(values['arm_command'].stamp-values['arm'].stamp
+                           if self.start_command is not None else None))
+        return CapturedTarget(origin, values['hand'].positions)
+
+    def check_start(self, values):
+        """以原±3°门槛分别检查实际姿态漂移及MC命令漂移；不把静态位置误差作为漂移。"""
+        if self.start_feedback is None:
+            raise ControlFailure('尚未采样规划起点')
+        check_arm(values['arm'].positions, self.start_feedback)
+        if self.start_command is not None:
+            check_arm(values['arm_command'].positions, self.start_command)
+
     def enable_commands(self, captured):
         """仅显式执行时创建50Hz发布器/定时器，等待DDS匹配并复核计划起点未漂移超过既有3度。"""
         from aimdk_msgs.msg import UpperBodyCommandArray
@@ -98,7 +130,7 @@ class UpperBodyExecutor:
             if time.monotonic() >= deadline:
                 raise ControlFailure('上肢命令DDS订阅匹配超时')
         values = self.feedback.checked()
-        check_arm(values['arm'].positions, captured.arm_rad)
+        self.check_start(values)
         self.diagnostics.record('command_transport', period_s=.02, publish_gap_limit_s=.08,
                                 subscription_count=self.publisher.get_subscription_count(),
                                 source='native_upper_body', mode='URS/RUNNING')
@@ -112,11 +144,12 @@ class UpperBodyExecutor:
         gap = None if self.last_publish is None else now - self.last_publish
         if gap is not None and gap > .08:
             raise ControlFailure(f'命令发布间隔{gap:.3f}秒超过0.08秒')
-        ideal = self.trajectory.at(now - self.began)
+        elapsed = 0. if self.last_sent is None else now - self.began
+        ideal = self.trajectory.at(elapsed)
         target = ideal
         self.compensation_details = None
         if self.compensation is not None:
-            blend = interpolate((0.,), (1.,), now - self.began, self.options.duration)[0]
+            blend = interpolate((0.,), (1.,), elapsed, self.options.duration)[0]
             target, self.compensation_details = self.compensation.apply(
                 self.captured, ideal, values, blend)
         self.command_target = target
@@ -133,14 +166,14 @@ class UpperBodyExecutor:
         self.last_sent = target
         self.last_sent_compensation = self.compensation_details
         self.last_publish = sent_at
-        self.last_elapsed = now - self.began
+        self.last_elapsed = elapsed
         self.sequence += 1
         self.diagnostics.record('command_published', sequence=msg.header.sequence,
                                 arm_rad=list(target.arm_rad), hand_openings=list(target.hand_openings),
                                 command_stamp_s=msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9,
                                 publish_gap_s=gap, compensation=self.compensation_details,
                                 ideal_arm_rad=list(ideal.arm_rad),
-                                elapsed_motion_s=now-self.began,
+                                elapsed_motion_s=elapsed,
                                 calculation_seconds=sent_at-now)
 
     def execute(self, captured, target, trajectory):

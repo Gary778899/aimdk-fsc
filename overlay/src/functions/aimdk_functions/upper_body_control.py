@@ -11,8 +11,7 @@ import os
 import sys
 import time
 
-from .dual_arm_control_core import ARM_NAMES, JOINT_TAGS, ControlFailure, check_arm, interpolate
-from .upper_body_cartesian_core import CapturedTarget
+from .dual_arm_control_core import ARM_NAMES, JOINT_TAGS, ControlFailure, interpolate
 from .upper_body_control_core import ArmCompensationGroup, plan_motion, selected_sides
 from .upper_body_diagnostics import UpperBodyLog, code_manifest, log_directory
 from .upper_body_execution import UpperBodyExecutor
@@ -32,6 +31,8 @@ def parser():
         command.add_argument('--execute', action='store_true', help='操作者预先进入URS/RUNNING后显式执行')
         command.add_argument('--timeout', type=float, default=5., help='启动/服务/匹配等待1..10秒；夹爪持续发送时间')
         command.add_argument('--feedback-timeout', type=float, default=.5, help='各路反馈时限0.2..1秒')
+        command.add_argument('--arm-start-source', choices=('mc-command', 'state'), default='mc-command',
+                             help='双臂规划起点：默认MC的HAL位置命令；state使用实际反馈作对照')
         command.add_argument('--log-dir', help='默认工作区log目录')
         command.add_argument('--load-description', default='unknown', help='实际姿态、工具和负载说明')
         if action == 'gripper':
@@ -168,7 +169,8 @@ def main(args=None):
                                    hand_state_check=False, hand_fault_check=True)
         print(f'日志：{diagnostics.path}', flush=True)
         print(f'动作={options.action}，侧别={options.side}，补偿={options.compensation}，'
-              f'时长={options.duration:g}s；夹爪状态/静止门槛关闭，故障检查保留。', flush=True)
+              f'起点={options.arm_start_source}，时长={options.duration:g}s；'
+              '夹爪状态/静止门槛关闭，故障检查保留。', flush=True)
         import rclpy
         from rclpy.signals import SignalHandlerOptions
 
@@ -201,9 +203,9 @@ def main(args=None):
             print('补偿刚度40 N·m/rad，偏置限幅±12°，随运动五次进度从零引入。', flush=True)
         port.compensation = compensation
         if arms:
-            # 模型初始化后重新采样，规划起点及补偿输入使用初始化完成后的新反馈。
+            # 模型初始化后重新采样，规划起点及补偿输入使用初始化完成后的新样本。
             values = port.capture(refreshed_after=time.monotonic())
-        captured = CapturedTarget(values['arm'].positions, values['hand'].positions)
+        captured = port.capture_target(values)
         trajectory, reports = plan_motion(captured, options, arms)
         diagnostics.record('plan', kind=trajectory.kind, arms=reports,
                            start_arm_rad=list(captured.arm_rad), target_arm_rad=list(trajectory.target.arm_rad),
@@ -215,7 +217,7 @@ def main(args=None):
         print(f'规划类型={trajectory.kind}；TCP使用torso_link坐标，腕原点暂视为法兰中心。', flush=True)
         if options.execute:
             refreshed = port.capture(refreshed_after=time.monotonic())
-            check_arm(refreshed['arm'].positions, captured.arm_rad)
+            port.check_start(refreshed)
             final = port.execute(captured, trajectory.target, trajectory)
             fk = {}
             for side, arm in arms.items():
@@ -227,13 +229,13 @@ def main(args=None):
                                sent_arm_rad=list(port.last_sent.arm_rad), feedback_fk=fk,
                                hand_target=list(trajectory.target.hand_openings),
                                actual_hand_openings=list(final['hand'].positions))
-            for name, origin, actual, expected in zip(ARM_NAMES, captured.arm_rad,
+            for name, origin, actual, expected in zip(ARM_NAMES, port.start_feedback,
                                                      final['arm'].positions, port.last_sent.arm_rad):
                 print(f'{name}: 实际增量={math.degrees(actual-origin):+.3f}°，'
                       f'发送目标误差={math.degrees(actual-expected):+.3f}°', flush=True)
             print(f'反馈FK={fk}；夹爪目标={trajectory.target.hand_openings}，'
                   f'实测={final["hand"].positions}；不判定夹爪到位。', flush=True)
-            print('完成既有±3°关节确认，已停止发布；不自动返程，不切换模式。停止发布不等于急停。', flush=True)
+            print('完成既有±5°关节确认，已停止发布；不自动返程，不切换模式。停止发布不等于急停。', flush=True)
         else:
             print('只读计划完成；显式--execute才执行一次单程。', flush=True)
         exit_code, reason = 0, 'completed'

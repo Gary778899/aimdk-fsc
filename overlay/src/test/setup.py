@@ -24,6 +24,7 @@ setup(
             'head_test = aimdk_test.head_test:main',
             'arm_test = aimdk_test.arm_test:main',
             'upper_body_sequence_test = aimdk_test.upper_body_sequence_test:main',
+            'upper_body_command_watch = aimdk_test.upper_body_command_watch:main',
         ],
     },
 )

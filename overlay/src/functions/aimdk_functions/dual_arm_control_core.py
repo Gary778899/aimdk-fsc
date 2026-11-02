@@ -117,6 +117,22 @@ def decode_arm(msg, received, serial):
                   dict(observed_names=names, domain_state=msg.state.value, joints=joints))
 
 
+def decode_arm_command(msg, received, serial):
+    """按名称将MC的HAL命令映射为左7右7 rad；缺失、重复或非有限位置抛出ControlFailure。
+
+    received为单调接收时间，serial为接收序号；返回保留原始源时间的Sample。
+    速度、力矩、刚度与阻尼仅记录，不复制到原生位置接口。
+    """
+    names = [joint.name for joint in msg.joints]
+    if len(names) != 14 or len(set(names)) != 14 or set(names) != set(ARM_NAMES):
+        raise ControlFailure(f'expected exactly 14 unique arm command joints; observed {names}')
+    found = {joint.name: joint for joint in msg.joints}
+    positions = [found[name].position for name in ARM_NAMES]
+    if not all(math.isfinite(value) for value in positions):
+        raise ControlFailure('arm command positions must be finite')
+    return sample(msg, received, serial, positions, dict(observed_names=names))
+
+
 def decode_hand(msg, received, serial):
     """解码两侧 CLAW 夹爪反馈并记录运动状态；类型、数量、开度或故障无效时抛出 ControlFailure。"""
     hands = []

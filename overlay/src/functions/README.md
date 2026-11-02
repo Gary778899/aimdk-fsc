@@ -41,7 +41,8 @@ ros2 run aimdk_functions upper_body_control tcp --help
 只读规划允许其他模式；规划后刷新反馈，再检查起点漂移与时效后开始执行。
 
 每次发送 `/mc/upper_body_command` 完整左7右7关节 rad 目标和模式1的左右夹爪开度。
-反馈按名称映射。未选关节与夹爪保持本次采样值；开启补偿时所选臂的七个关节均可能改变。
+手臂按名称映射。未选关节保持本次采样的规划起点，夹爪保持采样实际开度；
+开启补偿时所选臂的七个关节均可能改变。
 正常结束、失败、中断均停止发布并退出，不自动返程或切换模式。
 停止发布不是急停，退出后的持续保持与固件超时行为待实机确认。
 夹爪开度为位置目标，不提供力保持保证。
@@ -54,6 +55,35 @@ ros2 run aimdk_functions upper_body_control tcp --help
 
 三类动作均要求 `--side left/right/both`。双侧共用目标与独立目标互斥；
 独立目标仅在both下接受，必须同时给出左右两侧。两侧共用时长，独立输入不自动镜像。
+
+### 手臂规划起点
+
+适用X2 Ultra、SDK 1.1原生上肢入口。当前实现默认
+`--arm-start-source mc-command`：订阅MC发布的`/aima/hal/joint/arm/command`
+（`JointCommandArray`），以完整14关节的`position`按名称重排为左7右7 rad，
+初始化关节轨迹、TCP的FK/IK参考及夹爪动作期间的双臂保持目标。
+`--arm-start-source state`使用`/aima/hal/joint/arm/state`实际位置作对照。
+命令来源缺失、位置无效或超时均失败退出，保持所选来源。
+
+命令起点在规划时冻结，首帧原生`arm_pos`严格取该起点，补偿进度为0；
+随后按原时间轴推进轨迹，补偿沿用原算法及默认值。HAL命令在执行中继续只读记录，
+轨迹不跟随HAL命令重新定基。实际关节反馈仍用于故障、时效、漂移、跟踪及终点检查。
+原生接口仅发送位置，HAL的velocity、effort、stiffness、damping保留为日志观测。
+命令参考与反馈的同零点映射、首帧下沉改善及补偿叠加效果均待真机验证；
+依据见[命令观测报告](../../../exports/upper_body_command_watch_20261102/report.md)。
+
+首次验证在URS/RUNNING下执行零增量、关闭补偿，观察开始发布时的实体姿态及日志：
+
+```bash
+# 先只读核对起点；确认后以相同参数增加 --execute。
+ros2 run aimdk_functions upper_body_control joint --side both \
+  --tag shoulder_pitch --delta-deg 0 --no-compensation
+```
+
+检查`arm_start_reference`与首条`command_published`的14关节位置一致；
+比较启动前后`feedback`中的`arm`实际位置及`arm_command`完整字段，记录现场是否下沉。
+再由操作者恢复相同初始条件，用`--arm-start-source state`重复对照。
+零增量衔接验证后，再验证小幅joint/TCP动作及补偿开启行为。
 
 ## 关节增量
 
@@ -183,12 +213,14 @@ ros2 run aimdk_functions upper_body_control gripper --side both \
 保留源时间推进/回退、源年龄、接收时效、ROS时钟、硬件故障及首次错误锁存检查。
 `--feedback-timeout`统一设置各路接收、源停滞与源年龄时限，默认0.5秒，范围0.2..1秒；
 ROS时钟停滞上限沿用0.2秒。仅命令使用当前ROS时间，不改写反馈源时间。
-反馈QoS沿用best_effort/transient_local，补偿传感器best_effort/volatile，发布深度10。
+反馈QoS沿用best_effort/transient_local，补偿传感器及HAL命令best_effort/volatile，发布深度10。
 
 发布50Hz，间隔上限80ms；全部关节跟踪容差±5°，终点容差±5°，终点新反馈连续确认0.3秒，
 轨迹或夹爪持续发送结束后额外最多等待2秒。终点须已实际发布完整目标，补偿进度达到1。
 到位比较对象为实际发送目标，原理想轨迹和反馈FK另行记录。
-执行前的起点漂移校验容差保持±3°；日志分别记录跟踪与终点容差。
+执行前以采样实际反馈为基准检查姿态漂移，容差保持±3°；mc-command来源还以采样命令
+为基准复核命令漂移，容差同为±3°。命令与实际位置的静态差值记录在日志，
+执行时仍受上述±5°跟踪及终点约束。日志分别记录跟踪与终点容差。
 不超过5°的动作可能在实际运动很小时满足确认，不能据此认定精确执行了输入增量。
 `--timeout`还用于启动反馈、服务发现/响应与DDS匹配的各自有界等待。
 
@@ -198,6 +230,9 @@ ROS节点创建后立即建立反馈订阅，先于模式查询和运动学模�
 首次接收仍取决于ROS初始化与DDS发现；规划计算期间按现有单线程回调处理，不保证连续无丢帧采集。
 按事件增量写入并flush，包含完整原始反馈与时间、代码/模型哈希、限位、请求、分侧IK/SEW/分支、
 路径残差、补偿参数/偏置/源时间、理想与实际发送目标、周期耗时、反馈FK及退出原因。
+`arm_start_reference`记录起点来源、命令与实际位置差及各自源时间和源时间差；
+命令与反馈采用各自最新有效样本，未作硬件同步。`state`对照只订阅原有反馈流，
+需要同时观察HAL命令时使用实验包的`upper_body_command_watch`。
 未知SDK/固件版本标记unknown，真实版本由操作者核对。日志复用现有“机器人：下载日志”任务。
 
 ## 实现结构与独立观测工具
