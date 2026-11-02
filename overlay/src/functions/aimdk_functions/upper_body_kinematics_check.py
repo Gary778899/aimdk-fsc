@@ -2,7 +2,6 @@
 
 import argparse
 from dataclasses import asdict
-import hashlib
 import math
 import os
 from pathlib import Path
@@ -14,7 +13,7 @@ import traceback
 import numpy as np
 
 from .dual_arm_control_core import ARM_NAMES, ControlFailure
-from .upper_body_diagnostics import UpperBodyLog
+from .upper_body_diagnostics import UpperBodyLog, code_manifest, log_directory
 from .upper_body_kinematics.adapter import ArmKinematics
 from .upper_body_kinematics.parameters import parameter_report
 from .upper_body_kinematics_check_core import diagnostic_cases, round_trip
@@ -49,28 +48,6 @@ def validate_options(options):
             raise ValueError(f'--{name} 必须为有限正数')
     if not math.isfinite(options.feedback_timeout) or not .2 <= options.feedback_timeout <= 1.:
         raise ValueError('--feedback-timeout 必须为0.2..1秒')
-
-
-def log_directory(value):
-    """返回显式目录或按功能包标记探测的工作区log；探测失败要求显式指定目录。"""
-    if value:
-        return Path(value).expanduser().resolve()
-    candidates = (Path.cwd(), *Path.cwd().parents, *Path(__file__).resolve().parents)
-    for marker in ('overlay/src/functions/package.xml', 'src/functions/package.xml'):
-        for candidate in candidates:
-            if (candidate / marker).is_file():
-                return candidate / 'log'
-    raise ValueError('无法探测工作区，请指定 --log-dir /实际工作区/log')
-
-
-def code_manifest():
-    """记录实际加载安装位置及相关Python文件摘要，不依赖git或开发者源码绝对路径。"""
-    root = Path(__file__).resolve().parent
-    paths = (list(root.glob('upper_body_*.py'))
-             + list((root / 'upper_body_kinematics').rglob('*.py'))
-             + [root / 'dual_arm_control_core.py'])
-    return {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in sorted(paths)}
 
 
 def collect_snapshots(options, diagnostics):

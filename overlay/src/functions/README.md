@@ -5,7 +5,8 @@ ROS 2 包名为 `aimdk_functions`，使用 `ament_python`，依赖 NumPy >=1.21�
 
 运动统一入口为 `upper_body_control joint/tcp/gripper`。保留 `volume_control`、
 `arm_compensation_probe` 和 `upper_body_kinematics_check` 独立工具。
-本轮统一入口与双臂调度只完成本地静态、语法检查，尚未执行机器人容器构建或实机验证。
+整合后的统一入口已由用户完成机器人端验证；覆盖范围见[启动保持调查](../../../docs/archive/upper_body_startup_hold_investigation_20261030.md)。
+本轮冗余模块整理仅完成本地静态、语法检查，需同步后重新构建并验证。
 历史命令、参数和实机结果见[整理前说明](../../../docs/archive/upper_body_commands_before_unification_20261030.md)
 与[上肢验证记录](../../../docs/archive/x2_upper_body_validation_20261029.md)。
 
@@ -26,6 +27,8 @@ ros2 run aimdk_functions upper_body_control tcp --help
 
 旧 `dual_arm_control`、`upper_body_move`、`upper_body_line` 入口及其执行实现已移除。
 分别改用 `upper_body_control joint/gripper`、`tcp --path endpoint`、`tcp`。
+原 `upper_body_move_core.py`、`upper_body_line_core.py` 的规划实现已合并至
+`upper_body_cartesian_core.py`；共用日志目录探测与代码摘要函数归入 `upper_body_diagnostics.py`。
 同步排除会保护旧安装产物；新增入口必须重新构建，旧可执行文件可能仍出现在
 `ros2 pkg executables aimdk_functions`。确认实际安装布局和 overlay 来源后清理旧产物，
 不要继续运行旧入口。保持现有同步排除规则。
@@ -204,10 +207,11 @@ ROS节点创建后立即建立反馈订阅，先于模式查询和运动学模�
 | `upper_body_control.py` | 参数、单次生命周期与日志 |
 | `upper_body_control_core.py` | 分侧目标、统一轨迹、双臂合并与补偿组装 |
 | `upper_body_execution.py` / `upper_body_mode.py` | 单发布器、时间调度、终点确认／有界模式查询 |
-| `upper_body_move_core.py` / `upper_body_line_core.py` | 端点／直线纯IK规划 |
+| `upper_body_cartesian_core.py` | 完整目标契约、TCP端点与直线纯IK规划 |
 | `upper_body_ros.py` / `dual_arm_control_core.py` | ROS反馈适配／纯解码、时效、错误锁存、关节插值 |
 | `upper_body_compensation.py` | 分侧位置偏置计算 |
-| `upper_body_diagnostics.py` | 共用增量日志 |
+| `upper_body_diagnostics.py` | 共用增量日志、工作区日志目录探测及代码摘要 |
+| `upper_body_acceptance.py` / `upper_body_acceptance_replay.py` | 交互验收记录／实际快照离线回放 |
 
 包内模型资源独立安装，不依赖 `underlay/extra`。只读观测命令保持原行为：
 

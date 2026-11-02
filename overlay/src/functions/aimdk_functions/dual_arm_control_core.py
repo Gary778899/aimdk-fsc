@@ -171,12 +171,6 @@ class Stream:
         return value
 
 
-def require_static_hands(value):
-    """要求两侧夹爪均为静止候选，否则抛出 ControlFailure；硬件故障由解码器检查。"""
-    if not all(h['stationary_candidate'] for h in value.data['hands']):
-        raise ControlFailure('both claws must remain stationary, state=0, abs(velocity)<=0.01')
-
-
 def decode_urs_mc(msg, received, serial):
     """校验站立、URS/RUNNING 并保留原始源时间；状态不符时抛出 ControlFailure。"""
     action, status = msg.action_info.action_desc, msg.action_info.status.value

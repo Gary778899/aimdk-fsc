@@ -14,11 +14,10 @@ import time
 from .dual_arm_control_core import ARM_NAMES, JOINT_TAGS, ControlFailure, check_arm, interpolate
 from .upper_body_cartesian_core import CapturedTarget
 from .upper_body_control_core import ArmCompensationGroup, plan_motion, selected_sides
-from .upper_body_diagnostics import UpperBodyLog
+from .upper_body_diagnostics import UpperBodyLog, code_manifest, log_directory
 from .upper_body_execution import UpperBodyExecutor
 from .upper_body_kinematics.adapter import ArmKinematics
 from .upper_body_kinematics.parameters import parameter_report
-from .upper_body_kinematics_check import code_manifest, log_directory
 from .upper_body_mode import confirm_initial_mode
 
 

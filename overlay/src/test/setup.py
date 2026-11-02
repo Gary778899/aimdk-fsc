@@ -23,6 +23,7 @@ setup(
         'console_scripts': [
             'head_test = aimdk_test.head_test:main',
             'arm_test = aimdk_test.arm_test:main',
+            'upper_body_sequence_test = aimdk_test.upper_body_sequence_test:main',
         ],
     },
 )

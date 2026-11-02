@@ -6,10 +6,8 @@ import math
 from .dual_arm_control_core import (
     ARM_NAMES, JOINT_TAGS, ControlFailure, gripper_target, interpolate, joint_target,
 )
-from .upper_body_cartesian_core import CapturedTarget
+from .upper_body_cartesian_core import CapturedTarget, plan_line, plan_translation
 from .upper_body_kinematics.parameters import EXECUTION_LIMITS_RAD
-from .upper_body_move_core import plan_translation
-from .upper_body_line_core import plan_line
 
 
 def selected_sides(side):

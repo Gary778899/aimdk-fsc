@@ -101,7 +101,7 @@ class AcceptanceSession:
 
     def __init__(self, options):
         """创建唯一会话目录；默认沿用工作区log及现有日志下载任务。"""
-        from .upper_body_kinematics_check import code_manifest, log_directory
+        from .upper_body_diagnostics import code_manifest, log_directory
         from .upper_body_kinematics.parameters import parameter_report
 
         self.options = options

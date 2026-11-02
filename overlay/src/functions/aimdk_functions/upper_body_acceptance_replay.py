@@ -8,7 +8,7 @@ import numpy as np
 from .dual_arm_control_core import interpolate
 from .upper_body_kinematics.adapter import ArmKinematics
 from .upper_body_kinematics.vendor.x2_arm_model import log3
-from .upper_body_move_core import MAX_JOINT_DELTA_RAD
+from .upper_body_cartesian_core import MAX_JOINT_DELTA_RAD
 
 
 def distribution(values):
