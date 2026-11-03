@@ -154,7 +154,6 @@ class UpperBodyExecutor:
             return
         values = self.feedback.checked()
         now = time.monotonic()
-        check_publish_gap(self.last_publish, now)
         elapsed = 0. if self.last_sent is None else now - self.began
         ideal = self.trajectory.at(elapsed)
         target, self.compensation_details = prepare_motion_target(

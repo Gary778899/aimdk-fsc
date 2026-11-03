@@ -7,7 +7,6 @@ from .dual_arm_control_core import (
     ControlFailure, FeedbackMonitor, Stream, decode_arm, decode_hand,
     decode_urs_mc, decode_arm_command, sample,
 )
-from .upper_body_cartesian_core import CapturedTarget
 
 
 def decode_observed_mode(msg, received, serial):
@@ -102,15 +101,11 @@ def build_upper_body_command(node, target, sequence):
     """由 CapturedTarget 组装原生完整左7右7 rad 及模式1夹爪消息，不发布。
 
     调用方仍须执行模式有界查询、反馈监视和发布前候选检查；本函数不授予运动许可。
-    target由统一规划/补偿层组装，并由执行器检查所选关节；sequence为uint32序号。
+    target为统一规划/补偿层组装并由执行器校验的CapturedTarget；
+    sequence由执行器对递增序号取模得到uint32，本函数仅组装消息。
     """
     from aimdk_msgs.msg import UpperBodyCommandArray
 
-    if not isinstance(target, CapturedTarget):
-        raise ControlFailure('命令目标必须为 CapturedTarget')
-    if (isinstance(sequence, bool) or not isinstance(sequence, int)
-            or not 0 <= sequence <= 0xffffffff):
-        raise ControlFailure('命令序号须为 uint32 范围内整数')
     msg = UpperBodyCommandArray()
     msg.header.stamp = node.get_clock().now().to_msg()
     msg.header.frame_id = 'mc_upper_body'
