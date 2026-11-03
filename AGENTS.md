@@ -42,6 +42,7 @@
 | 官方诊断工具 | `underlay/src/robotop/` → `robotop` | 官方 SDK 自带的终端状态、日志、通信与故障诊断工具，以及独立 Orin 资源监视节点；不承载自研采集或实验状态机。 |
 | 自研实验工具 | `overlay/src/test/` → `aimdk_test` | 头部、手臂诊断与运动实验。入口为 `aimdk_test/head_test.py`、`arm_test.py`；`*_core.py` 为无 ROS 导入的校验／算法核心，`arm_test_motion.py` 为手臂 ROS 执行适配，`head_test_diagnostics.py` 提供实验 JSONL 日志。这里的 `test` 是业务包目录，不是全工作区单元测试目录。 |
 | 自研功能命令 | `overlay/src/functions/` → `aimdk_functions` | 独立实用功能：`volume_control.py`（音量／静音）、`upper_body_control.py`（URS 下单臂／双臂关节、TCP及夹爪控制）。统一规划在 `upper_body_control_core.py`，执行在 `upper_body_execution.py`，反馈校验复用 `dual_arm_control_core.py`，日志在 `upper_body_diagnostics.py`；不依赖测试包，也不作为所有公共代码的汇总包。 |
+| 自研遥操输入 | `overlay/src/remote_control/` → `remote_control` | XR完整帧、SDK输入、Grip会话、坐标映射和输入日志；不依赖AimDK。机器人双臂IK与执行适配保留在`aimdk_functions`。 |
 | 自研只读观测 | `overlay/src/locomotion_wrapper/` → `locomotion_wrapper` | 厂商关节状态聚合与标准 IMU 校验转发，不含运动控制或策略推理。节点在 `src/hardware_wrapper_node.cpp`，纯校验在 `include/locomotion_wrapper/state_validation.hpp`，配置在 `config/`，启动在 `launch/`，校验测试在 `test/`；`joint_watch.py` 仅监视标准关节状态。本轮不参与同步或构建。 |
 | 自研数据采集 | `overlay/src/data_collection/` → `data_collection` | 独立订阅 SDK 双臂／夹爪反馈，生成统一 JSONL 帧并可选录制原始 MCAP，通过 ZeroMQ START／STOP／STATUS 控制录制。节点在 `src/data_collection_node.cpp`；`launch/data_collection.launch.py` 单独启动采集器，`robot_data_collection.launch.py` 为同包内的启动别名。 |
 
@@ -54,7 +55,7 @@
 ### 包边界与构建范围
 
 - 自研业务不依赖官方示例作为公共库，不向 `aimdk_msgs`、`ruckig` 或 `robotop` 混入实验业务。公共逻辑先在实际使用的包内整理；不要仅为目录分类新建包或搬动源码。
-- 自研包在机器人 Humble 容器内通过 `bash scripts/build_overlay.sh [包名...]` 构建，默认加载 `/home/agi/aimdk/install/setup.bash`，可由 `AIMDK_UNDERLAY_INSTALL` 指定实际安装目录。入口使用 `--base-paths src --packages-select`，仅允许 `aimdk_test`、`aimdk_functions`、`data_collection`，不构建厂商包或 `locomotion_wrapper`；不使用 `--packages-up-to` 将厂商依赖纳入构建。目录改名或依赖整理需同时核查入口、导入、日志路径探测和安装来源；仅推送代码不会清理受同步排除保护的旧安装产物。
+- 自研包在机器人 Humble 容器内通过 `bash scripts/build_overlay.sh [包名...]` 构建，默认加载 `/home/agi/aimdk/install/setup.bash`，可由 `AIMDK_UNDERLAY_INSTALL` 指定实际安装目录。入口使用 `--base-paths src --packages-select`，仅允许 `aimdk_test`、`remote_control`、`aimdk_functions`、`data_collection`，不构建厂商包或 `locomotion_wrapper`；不使用 `--packages-up-to` 将厂商依赖纳入构建。目录改名或依赖整理需同时核查入口、导入、日志路径探测和安装来源；仅推送代码不会清理受同步排除保护的旧安装产物。
 
 ### 上肢实验与反馈
 
@@ -82,6 +83,7 @@
 - 不要将本地检查结果表述为机器人容器内构建或测试通过。汇报验证情况时，明确执行环境、已完成的检查和未执行的验证。
 - 仅在任务确实需要远程连接、容器或挂载信息时，先检查项目现有配置和文档；仍无法确认时再向用户询问。不要因缺少这些信息而阻塞不依赖它们的代码编写和静态检查，也不要猜测执行命令或声称已完成验证。
 - 本项目服务于科研，非开发项目。代码实现优先形成最小功能闭环，不考虑工程完整性。新增安全机制、保护检查或中止门槛前，先参考相近官方示例，结合接口要求、当前实验目标和已观察到的问题评估必要性。缺乏明确依据的稳定性、时序或精度阈值，优先记录观测结果，不默认作为阻断条件；根据实测需要逐步增加，并说明依据。已有明确约定的接口约束和异常处理，不因本原则自动移除。
+- 脚本编写或者文档撰写（更新）时，如发现缺失信息或者冲突内容，首先同我确认处理方法。
 
 
 ## 文档写作
