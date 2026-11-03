@@ -332,3 +332,56 @@ ros2 run aimdk_functions upper_body_acceptance --steps 3 --snapshot-log /实际�
 
 待办：独立验证实体法兰面中心与腕原点的平移/方向关系；验证双臂调度周期、右臂/双臂补偿收益、
 实体直线精度与退出后的保持行为。当前配置不包含实体TCP标定结论。
+
+## PICO双臂只读回放
+
+`remote_control`负责XR输入、Grip会话、坐标映射及输入日志；本包负责X2双侧逐帧IK。
+新增`upper_body_teleop_replay`从`xr_record`日志和实际反馈快照回放，不导入ROS、不发布运动、补偿关闭，
+`--execute`明确拒绝。机器人容器内先构建`remote_control`与`aimdk_functions`，再运行：
+
+```bash
+ros2 run aimdk_functions upper_body_teleop_replay \
+  --xr-log /实际路径/xr_input.jsonl \
+  --mapping-config /实际路径/mapping.json \
+  --snapshot-log /实际路径/upper_body_快照.jsonl \
+  --snapshot-index 0 --load-description '实际工具和负载'
+```
+
+映射配置及XR日志格式见[remote_control说明](../remote_control/README.md)。
+快照使用`upper_body_kinematics_check`生成的`snapshot`事件，按关节名称恢复左7右7目标。
+首帧从实际快照建立`gripper` TCP参考；离线重接管使用最后已接受理想目标模拟机器人参考。
+现场只读入口使用实际反馈建立重接管参考；补偿策略留待后续执行阶段。
+
+`upper_body_online_core.DualArmOnlineIK`的`propose()`计算完整双侧候选，`validate_commit()`核对候选归属与版本，
+`commit()`统一提交关节、SEW、分支与目标存储；调用方串行使用。无解、越限、分支改变或相邻／会话总变化超过10°时，
+两侧状态均保持上一已接受值。目标须位于`torso_link`，单位m和rad，未使能侧保持上一目标。
+零增量保持种子；FK残差记录到日志。输入映射和IK均预检通过后才联合提交。
+`OnlineTargetStore`保存完整目标、关联输入序号和单调接受时间，供后续持续发布读取。
+
+输出沿用工作区`log/upper_body_*.jsonl`，记录真实快照、配置哈希、模型及TCP来源、XR输入、
+映射目标、双侧候选、残差、耗时和接受／拒绝原因。首个失败停止回放，退出码1；成功接受至少一帧并完成读回后退出0。
+当前入口不验证50Hz发布调度或实体跟随。容器内可单独运行状态契约检查：
+
+```bash
+python3 -m unittest discover -s src/functions/test -p 'test_upper_body_*.py'
+```
+
+### 现场只读IK与统计
+
+`upper_body_teleop_observe`连接SDK及原始机器人反馈，使用实际FK建立Grip参考，保存XR与IK两份日志。
+补偿关闭，拒绝`--execute`，不创建运动发布器。在机器人容器运行：
+
+```bash
+ros2 run aimdk_functions upper_body_teleop_observe \
+  --device-id 实际设备标识 --input-config /实际路径/input.json \
+  --mapping-config /实际路径/mapping.json \
+  --xr-output /home/agi/aimdk-fsc/log/xr_observe.jsonl \
+  --input-timeout 实测确定的秒数 --duration 60 \
+  --load-description '实际工具和负载'
+ros2 run aimdk_functions upper_body_teleop_stats /实际路径/upper_body_观测或回放.jsonl
+```
+
+`--input-timeout`显式配置接收、源时间停滞及排队年龄时限；跟踪失效、断链或时间回退终止本次观测。
+缺少跟踪或重定位字段时按输入包配置及现场操作约定处理。反馈时限沿用0.5秒，可在0.2..1秒内配置。
+统计读回输入与结果关联、双侧残差及耗时P50/P95/P99/最大值；20ms计数仅用于观测计算负载。
+统计退出0表示读回成功；`replay_complete`表示日志中每个输入均有成功结果及正常结束记录。

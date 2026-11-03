@@ -30,6 +30,9 @@ setup(
             'arm_compensation_probe = aimdk_functions.arm_compensation_probe:main',
             'upper_body_kinematics_check = aimdk_functions.upper_body_kinematics_check:main',
             'upper_body_acceptance = aimdk_functions.upper_body_acceptance:main',
+            'upper_body_teleop_replay = aimdk_functions.upper_body_teleop_replay:main',
+            'upper_body_teleop_observe = aimdk_functions.upper_body_teleop_observe:main',
+            'upper_body_teleop_stats = aimdk_functions.upper_body_teleop_stats:main',
         ],
     },
 )
