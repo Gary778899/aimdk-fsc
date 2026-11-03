@@ -10,7 +10,7 @@ underlay/
   version、topics_and_services、run_docs.sh、docs/cn/
   extra/       # 强化学习参考工程及补充模型，忽略Git、不同步、不构建
 overlay/
-  src/functions、test、data_collection、locomotion_wrapper
+  src/functions、remote_control、test、data_collection、locomotion_wrapper
 scripts/       # 构建入口及本地远程清理工具
 docker/        # 容器镜像定义及启动脚本
 docs/          # 自研规划与实验记录
@@ -70,23 +70,26 @@ cd /home/agi/aimdk-fsc
 bash scripts/build_overlay.sh
 ```
 
-默认只构建 `aimdk_test`、`aimdk_functions`、`data_collection`，也可只构建指定包：
+默认只构建 `aimdk_test`、`remote_control`、`aimdk_functions`、`data_collection`，也可只构建指定包：
 
 ```bash
 bash scripts/build_overlay.sh aimdk_functions
 ```
 
+首次使用遥操入口时同时构建依赖：`bash scripts/build_overlay.sh remote_control aimdk_functions`。
+XR输入、会话与坐标映射见[遥操输入包说明](overlay/src/remote_control/README.md)。
+
 入口 [build_overlay.sh](scripts/build_overlay.sh) 默认加载
 `/home/agi/aimdk/install/setup.bash`；通过环境变量 `AIMDK_UNDERLAY_INSTALL` 可指定其他安装目录。
 它使用 `--base-paths src --packages-select`，不递归构建厂商包，不接受 locomotion 或其他包名。
-默认启用 `--symlink-install`。首次构建成功后，修改 `aimdk_test`、`aimdk_functions`
+默认启用 `--symlink-install`。首次构建成功后，修改 `aimdk_test`、`remote_control`、`aimdk_functions`
 已有 Python 模块，只需推送工作区并重启对应命令；运行中的进程需先退出再同步。
 新增、删除模块，修改 `setup.py`、命令入口、依赖或安装资源，以及修改 C++ 代码后，重新构建对应包。
 切换安装方式后须完成一次构建；若提示旧安装文件与符号链接冲突，清理报错包对应的
 `build/<包名>`、`install/<包名>` 后重建，保留源码、数据和日志。
 采集器 SDK 版本从 underlay 安装目录同级 `version` 读取，可用 `AIMDK_SDK_VERSION_FILE`
 指定真实版本文件；缺失时记录 `unknown`，不使用本地副本冒充机器人 SDK 版本。
-脚本不自动安装依赖或构建 underlay，三个自研包可按实际依赖就绪情况分别构建。
+脚本不自动安装依赖或构建 underlay，自研包可按实际依赖就绪情况分别构建。
 
 每个运行终端加载厂商和自研安装环境，再执行所需命令：
 

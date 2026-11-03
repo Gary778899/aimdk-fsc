@@ -1,0 +1,10 @@
+{
+  "basis": null,
+  "translation_scale": null,
+  "rotation_mode": null,
+  "grip_threshold": null,
+  "gripper_mode": null,
+  "trigger_openings": null,
+  "unknown_tracking": null,
+  "base_frame": "torso_link"
+}
