@@ -53,7 +53,8 @@ Ctrl-C结束、关闭SDK并排空原始回调，退出码130，日志结束原�
 - SDK原始回调、输入配置、录制与统计命令见[SDK接口说明](SDK_INTERFACE.md)。
 - `mapping.py`：`MappingConfig.load(path)`加载配置；`Session.propose(frame, robot_tcp_poses, hand_openings)`生成双侧候选。
 - 双侧IK成功后预检`Session.validate_commit(proposal)`，再统一提交IK和`Session.commit(proposal)`；失败调用`reject(proposal)`。
-- 每侧Grip上升沿使用调用方传入的机器人实际反馈FK建立参考；连续映射使用原参考，Grip松开保持已提交目标。
+- 每侧Grip上升沿使用调用方传入的机器人TCP建立参考；连续映射使用原参考，Grip松开保持已提交目标。
+  X2的首次HAL命令参考、同会话理想目标参考及中断恢复见[功能包说明](../functions/README.md#现场只读ik与统计)。
 - 断链、已报告的跟踪失效、设备／参考空间变化或源时间回退清除参考；先观察Grip松开，再重新按下接管。
 
 `XRFrame.seq`为适配接收序号；`source_time_ns`保留源时间，`received_monotonic_s`为本机接收时间。

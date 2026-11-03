@@ -1,4 +1,4 @@
-"""从XR记录和真实反馈快照回放双臂逐帧IK；只读、无ROS导入。"""
+"""从XR记录和机器人命令／反馈快照回放双臂逐帧IK；只读、无ROS导入。"""
 
 import argparse
 import hashlib
@@ -23,16 +23,19 @@ def parser():
     result.add_argument('--mapping-config', required=True, help='显式坐标、Grip及夹爪映射JSON')
     result.add_argument('--snapshot-log', required=True, help='upper_body_kinematics_check的snapshot日志')
     result.add_argument('--snapshot-index', type=int, default=0, help='从零开始的snapshot事件索引')
+    result.add_argument('--arm-start-source', choices=('mc-command', 'state'), default='mc-command',
+                        help='默认取快照HAL位置命令；state仅用于历史实际反馈对照')
     result.add_argument('--log-dir', help='输出日志父目录，默认工作区log')
     result.add_argument('--load-description', required=True, help='采样时工具安装及实际负载说明')
     result.add_argument('--execute', action='store_true', help='首轮只读，提供此参数立即拒绝')
     return result
 
 
-def read_snapshot(path, index):
+def read_snapshot(path, index, arm_start_source='mc-command'):
     """从已有日志选择第index个snapshot，按名称重排14关节；非法数据抛出ValueError。
 
-    夹爪位置沿用已有快照的左右槽位；完整原始snapshot随输出元数据保存。
+    arm_start_source选择HAL位置命令或实际反馈，不自动回退；夹爪取实际开度。
+    完整原始snapshot随输出元数据保存；HAL命令沿用按名称解码后的14轴槽位。
     """
     if index < 0:
         raise ValueError('snapshot-index须为非负整数')
@@ -52,7 +55,12 @@ def read_snapshot(path, index):
                 continue
             fields = row['fields']
             names = fields['arm_names']
-            positions = fields['streams']['arm']['positions']
+            if arm_start_source not in ('mc-command', 'state'):
+                raise ValueError('无效的手臂起点来源')
+            stream_name = 'arm_command' if arm_start_source == 'mc-command' else 'arm'
+            if stream_name not in fields['streams']:
+                raise ValueError(f'快照缺少{stream_name}；请采集含HAL命令的新快照，或显式选择state对照')
+            positions = fields['streams'][stream_name]['positions']
             if (len(names) != 14 or len(set(names)) != 14 or set(names) != set(ARM_NAMES)
                     or len(positions) != 14):
                 raise ValueError('快照须包含完整且唯一的14个关节名称与位置')
@@ -66,9 +74,10 @@ def read_snapshot(path, index):
 def replay_frames(frames, session, solver, diagnostics, reference_provider=None):
     """串行消费XR帧并联合提交映射与IK，返回接受数量；任一错误记录后终止。
 
-    首帧以实际反馈建立TCP参考，后续Grip重按以最后已接受理想目标模拟机器人参考；
-    这是离线回放，不以该参考代替真机重接管时的实际反馈。reference_provider(frame)
-    可提供实际反馈计算的(robot_tcp_poses, hand_openings)，供只读现场入口复用。
+    离线首帧使用所选快照建立TCP参考，后续Grip重按使用最后已接受理想目标；
+    静态快照不能模拟现场首次Grip时重新采样HAL命令。reference_provider(frame)
+    返回(robot_tcp_poses, hand_openings, command_reference, rebase_sides)，
+    供现场入口在首次Grip接管时事务式重建HAL命令参考。
     """
     accepted = 0
     for frame in frames:
@@ -78,11 +87,13 @@ def replay_frames(frames, session, solver, diagnostics, reference_provider=None)
         committed = False
         began = time.monotonic()
         try:
-            poses, openings = ((solver.tcp_poses(), solver.accepted.hand_openings)
-                               if reference_provider is None else reference_provider(frame))
+            poses, openings, reference, rebase_sides = (
+                (solver.tcp_poses(), solver.accepted.hand_openings, None, ())
+                if reference_provider is None else reference_provider(frame))
             mapping_proposal = session.propose(frame, poses, openings)
             diagnostics.record('tcp_target', target=mapping_proposal.target.to_dict())
-            candidate = solver.propose(mapping_proposal.target)
+            candidate = solver.propose(mapping_proposal.target, reference=reference,
+                                       rebase_sides=rebase_sides)
             session.validate_commit(mapping_proposal)
             solver.validate_commit(candidate)
             # 两方预检后串行提交；入口独占会话和IK实例，期间不运行回调。
@@ -123,7 +134,8 @@ def main(args=None):
     diagnostics = None
     reason = 'failed'
     try:
-        captured, snapshot = read_snapshot(options.snapshot_log, options.snapshot_index)
+        captured, snapshot = read_snapshot(options.snapshot_log, options.snapshot_index,
+                                           options.arm_start_source)
         config_path = Path(options.mapping_config).expanduser().resolve()
         config = MappingConfig.load(config_path)
         diagnostics = UpperBodyLog(
@@ -131,7 +143,7 @@ def main(args=None):
             snapshot=snapshot, mapping_config=json.loads(config_path.read_text(encoding='utf-8')),
             mapping_config_sha256=hashlib.sha256(config_path.read_bytes()).hexdigest(),
             code_sha256=code_manifest(), compensation_enabled=False, execute=False,
-            reference_policy='snapshot_then_last_accepted_ideal_target')
+            reference_policy=f'{options.arm_start_source}_snapshot_then_last_accepted_ideal_target')
         print(f'只读回放日志：{diagnostics.path}', flush=True)
         solver = DualArmOnlineIK(captured)
         diagnostics.record('online_ik_config', **solver.describe())

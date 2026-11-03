@@ -49,6 +49,7 @@ class IKProposal:
     target: CapturedTarget
     states: tuple
     report: dict
+    origin: CapturedTarget
 
 
 @dataclass(frozen=True)
@@ -85,10 +86,10 @@ class DualArmOnlineIK:
     """先求解并校验全部候选，再显式提交双侧状态；调用方串行使用。"""
 
     def __init__(self, captured, arms=None):
-        """使用本次完整反馈captured和gripper模型初始化理想状态，非法输入抛出异常。
+        """使用完整关节起点captured和gripper模型初始化理想状态，非法输入抛出异常。
 
         arms可注入同侧ArmKinematics用于离线验证；默认加载包内左右gripper模型。
-        相对会话起点10°实验范围在整个实例内保持，不随Grip重按而扩大。
+        首次Grip可事务式更新所选侧命令参考；之后10°实验范围不随Grip重按扩大。
         """
         if not isinstance(captured, CapturedTarget):
             raise ControlFailure('在线IK起点须为CapturedTarget')
@@ -99,6 +100,7 @@ class DualArmOnlineIK:
         self.states = {}
         self.revision = 0
         self.last_input_seq = None
+        self.command_reference_sides = set()
         self.store = OnlineTargetStore(captured)
         for index, side in enumerate(SIDES):
             arm = self.arms[side]
@@ -131,11 +133,13 @@ class DualArmOnlineIK:
                     joint_delta_limit_rad=MAX_JOINT_DELTA_RAD,
                     clamp_reach=False, fallback=False, compensation_enabled=False)
 
-    def propose(self, frame):
+    def propose(self, frame, *, reference=None, rebase_sides=()):
         """为TargetFrame求完整候选；无解、越限或分支改变抛出OnlineIKFailure。
 
         每侧残差只记录；沿用10°相邻及相对实例起点范围。调用不改变已接受目标、
         种子、SEW、分支、revision或目标存储；未使能侧保持上一已接受目标。
+        reference为首次接管的新鲜HAL命令；rebase_sides指定首次接管的侧，同时重建
+        这些侧的种子、SEW及10°范围起点，候选提交前不生效。
         """
         began = time.monotonic()
         report = dict(status='rejected', arms={}, started_monotonic_s=began,
@@ -149,10 +153,28 @@ class DualArmOnlineIK:
                           received_monotonic_s=frame.received_monotonic_s)
             if self.last_input_seq is not None and frame.input_seq <= self.last_input_seq:
                 raise ControlFailure('目标序号未推进')
-            candidate_target = CapturedTarget(self.accepted.arm_rad, frame.hand_openings)
+            baseline, origin = self.accepted, self.origin
+            reference_states = dict(self.states)
+            if any(side not in SIDES for side in rebase_sides):
+                raise ControlFailure('重新建立参考的侧须为left或right')
+            if self.command_reference_sides.intersection(rebase_sides):
+                raise ControlFailure('同会话已接管侧须延续理想目标；重新采样命令需新建会话')
+            for side in rebase_sides:
+                if not isinstance(reference, CapturedTarget) or not getattr(frame, side).enabled:
+                    raise ControlFailure('首次接管要求完整命令参考及使能侧')
+                index = SIDES.index(side)
+                joints = reference.arm_rad[index * 7:index * 7 + 7]
+                baseline = baseline.for_arm(side, joints)
+                origin = origin.for_arm(side, joints)
+                sew = float(self.arms[side].solver.sew_angle(np.asarray(joints)))
+                if not math.isfinite(sew):
+                    raise ControlFailure(f'{side}命令参考SEW非有限')
+                reference_states[side] = ArmTrackingState(joints, sew, None)
+            report['rebase_sides'] = list(rebase_sides)
+            candidate_target = CapturedTarget(baseline.arm_rad, frame.hand_openings)
             states = []
             for index, side in enumerate(SIDES):
-                arm, previous = self.arms[side], self.states[side]
+                arm, previous = self.arms[side], reference_states[side]
                 goal = getattr(frame, side)
                 row = dict(enabled=goal.enabled, seed_rad=list(previous.joints),
                            previous_sew_rad=previous.sew, previous_branch=previous.branch,
@@ -181,9 +203,9 @@ class DualArmOnlineIK:
                 if not math.isfinite(sew):
                     raise ControlFailure(f'{side}候选SEW非有限')
                 candidate_target = candidate_target.for_arm(side, joints)
-                origin = self.origin.arm_rad[index * 7:index * 7 + 7]
+                origin_joints = origin.arm_rad[index * 7:index * 7 + 7]
                 step = max(abs(a - b) for a, b in zip(joints, previous.joints))
-                excursion = max(abs(a - b) for a, b in zip(joints, origin))
+                excursion = max(abs(a - b) for a, b in zip(joints, origin_joints))
                 if max(step, excursion) > MAX_JOINT_DELTA_RAD:
                     raise ControlFailure(f'{side}相邻或会话总变化超过既有10°范围')
                 actual, actual_rotation = arm.forward(joints)
@@ -200,7 +222,7 @@ class DualArmOnlineIK:
             report.update(status='candidate', arm_rad=list(candidate_target.arm_rad),
                           hand_openings=list(candidate_target.hand_openings),
                           calculation_seconds=time.monotonic() - began)
-            return IKProposal(self, self.revision, frame.input_seq, candidate_target, tuple(states), report)
+            return IKProposal(self, self.revision, frame.input_seq, candidate_target, tuple(states), report, origin)
         except Exception as error:
             report.update(reason=str(error), calculation_seconds=time.monotonic() - began,
                           last_accepted_rad=list(self.accepted.arm_rad))
@@ -215,6 +237,8 @@ class DualArmOnlineIK:
         """提交本实例当前revision候选并更新完整目标存储；过期或异源候选抛出ControlFailure。"""
         self.validate_commit(proposal)
         self.accepted = proposal.target
+        self.origin = proposal.origin
+        self.command_reference_sides.update(proposal.report['rebase_sides'])
         self.states = dict(zip(SIDES, proposal.states))
         self.last_input_seq = proposal.input_seq
         self.revision += 1

@@ -2,13 +2,17 @@
 
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock
 
 import numpy as np
 
-from remote_control.frames import Pose, TCPGoal, TargetFrame
+from remote_control.frames import Controller, Pose, TCPGoal, TargetFrame, XRFrame
+from remote_control.mapping import MappingConfig, Session
 from aimdk_functions.upper_body_cartesian_core import CapturedTarget
 from aimdk_functions.upper_body_kinematics.parameters import EXECUTION_LIMITS_RAD
 from aimdk_functions.upper_body_online_core import DualArmOnlineIK, OnlineIKFailure
+from aimdk_functions.upper_body_teleop_observe import command_reference
+from aimdk_functions.upper_body_teleop_replay import replay_frames
 
 
 class FakeArm:
@@ -121,6 +125,79 @@ class OnlineCoreTest(unittest.TestCase):
         self.assertEqual(value.target, self.captured)
         self.assertEqual(sum(arm.calls for arm in self.arms.values()), 0)
         self.assertIs(self.solver.store.get(), value)
+
+    def teleop_step(self, seq, command_delta, grips=(1., 0.), x=0.):
+        """使用不同于实际反馈的HAL命令回放一帧，返回该帧采样的完整命令。"""
+        if not hasattr(self, 'session'):
+            self.config = MappingConfig.from_dict(dict(
+                basis=np.eye(3), translation_scale=1., rotation_mode='relative',
+                grip_threshold=.5, gripper_mode='hold', trigger_openings=None,
+                unknown_tracking='reject', base_frame='torso_link'))
+            self.session = Session(self.config)
+        joints = list(self.captured.arm_rad)
+        for index in (0, 7):
+            joints[index] += command_delta
+        values = dict(
+            arm=SimpleNamespace(positions=self.captured.arm_rad, stamp=1., serial=seq),
+            arm_command=SimpleNamespace(positions=tuple(joints), stamp=1.01, serial=seq),
+            hand=SimpleNamespace(positions=self.captured.hand_openings, serial=seq))
+        hands = [Controller(Pose((x, 0., 0.), np.eye(3)), grip, 0., tracking_valid=True)
+                 for grip in grips]
+        frame = XRFrame(seq, seq * 1000, float(seq), *hands)
+        diagnostics = Mock()
+
+        def reference_provider(value):
+            """以人工反馈提供现场参考，保持与真实入口相同的提交路径。"""
+            return command_reference(value, values, self.solver, self.config, diagnostics)
+
+        replay_frames([frame], self.session, self.solver, diagnostics, reference_provider)
+        return tuple(joints)
+
+    def test_first_grip_samples_command_and_zero_increment_preserves_it(self):
+        """启动后等待期间HAL变化，首次Grip使用按下时命令，SEW同步且不调用IK。"""
+        self.teleop_step(1, .01, grips=(0., 0.))
+        command = self.teleop_step(2, .03)
+        self.assertEqual(self.solver.accepted.arm_rad[:7], command[:7])
+        self.assertEqual(self.solver.origin.arm_rad[:7], command[:7])
+        self.assertEqual(self.solver.states['left'].sew, command[0])
+        self.assertEqual(self.solver.command_reference_sides, {'left'})
+        self.assertEqual(self.arms['left'].calls, 0)
+
+    def test_regrip_uses_ideal_and_later_first_grip_is_independent(self):
+        """左臂重按忽略新的HAL偏置，右臂首次按下独立取新命令且不重置左臂范围。"""
+        command = self.teleop_step(1, .02)
+        self.teleop_step(2, .04, x=.01)
+        ideal = self.solver.accepted.arm_rad[:7]
+        self.teleop_step(3, .06, grips=(0., 0.), x=.2)
+        new_command = self.teleop_step(4, .08, grips=(1., 1.), x=.3)
+        self.assertEqual(self.solver.accepted.arm_rad[:7], ideal)
+        self.assertEqual(self.solver.origin.arm_rad[:7], command[:7])
+        self.assertEqual(self.solver.accepted.arm_rad[7:], new_command[7:])
+        self.assertEqual(self.solver.command_reference_sides, {'left', 'right'})
+
+    def test_failed_first_grip_does_not_commit_reference(self):
+        """右臂失败时，左臂首次命令参考、范围起点及已接管标记均不生效。"""
+        self.teleop_step(1, .02, grips=(0., 1.))
+        before, origin = self.solver.accepted, self.solver.origin
+        store, states = self.solver.store.get(), dict(self.solver.states)
+        self.arms['right'].fail = True
+        with self.assertRaises(OnlineIKFailure):
+            self.teleop_step(2, .04, grips=(1., 1.), x=.01)
+        self.assertEqual(self.solver.accepted, before)
+        self.assertEqual(self.solver.origin, origin)
+        self.assertEqual(self.solver.states, states)
+        self.assertIs(self.solver.store.get(), store)
+        self.assertEqual(self.solver.command_reference_sides, {'right'})
+
+    def test_restart_discards_old_ideal_and_samples_new_command(self):
+        """异常后重启会话，首次接管重新取HAL命令，不复用中断前理想目标。"""
+        self.teleop_step(1, .02, grips=(1., 1.))
+        self.teleop_step(2, .02, grips=(1., 1.), x=.01)
+        self.solver = DualArmOnlineIK(self.captured, self.arms)
+        del self.session
+        command = self.teleop_step(3, .06, grips=(1., 1.))
+        self.assertEqual(self.solver.accepted.arm_rad, command)
+        self.assertEqual(self.solver.origin.arm_rad, command)
 
 
 if __name__ == '__main__':

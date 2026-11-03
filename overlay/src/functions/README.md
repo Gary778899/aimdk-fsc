@@ -336,7 +336,7 @@ ros2 run aimdk_functions upper_body_acceptance --steps 3 --snapshot-log /实际�
 ## PICO双臂只读回放
 
 `remote_control`负责XR输入、Grip会话、坐标映射及输入日志；本包负责X2双侧逐帧IK。
-新增`upper_body_teleop_replay`从`xr_record`日志和实际反馈快照回放，不导入ROS、不发布运动、补偿关闭，
+`upper_body_teleop_replay`从XR日志和机器人命令／反馈快照回放，不导入ROS、不发布运动、补偿关闭，
 `--execute`明确拒绝。机器人容器内先构建`remote_control`与`aimdk_functions`，再运行：
 
 ```bash
@@ -348,13 +348,16 @@ ros2 run aimdk_functions upper_body_teleop_replay \
 ```
 
 映射配置及XR日志格式见[remote_control说明](../remote_control/README.md)。
-快照使用`upper_body_kinematics_check`生成的`snapshot`事件，按关节名称恢复左7右7目标。
-首帧从实际快照建立`gripper` TCP参考；离线重接管使用最后已接受理想目标模拟机器人参考。
-现场只读入口使用实际反馈建立重接管参考；补偿策略留待后续执行阶段。
+快照使用`upper_body_kinematics_check --include-arm-command`生成的`snapshot`事件，
+或现场只读遥操日志中的`snapshot`；关节按名称解码为左7右7。
+默认`--arm-start-source mc-command`从快照的`arm_command`建立`gripper` TCP及IK初值，
+缺少命令流时拒绝；历史快照可显式指定`--arm-start-source state`进行实际反馈对照。
+离线快照固定，首次Grip不能模拟现场重新采样命令；后续重按使用最后已接受理想目标。
 
 `upper_body_online_core.DualArmOnlineIK`的`propose()`计算完整双侧候选，`validate_commit()`核对候选归属与版本，
 `commit()`统一提交关节、SEW、分支与目标存储；调用方串行使用。无解、越限、分支改变或相邻／会话总变化超过10°时，
-两侧状态均保持上一已接受值。目标须位于`torso_link`，单位m和rad，未使能侧保持上一目标。
+两侧状态均保持上一已接受值。现场每侧首次Grip同时建立该侧10°范围起点，后续重按保持此起点。
+目标须位于`torso_link`，单位m和rad，未使能侧保持上一目标。
 零增量保持种子；FK残差记录到日志。输入映射和IK均预检通过后才联合提交。
 `OnlineTargetStore`保存完整目标、关联输入序号和单调接受时间，供后续持续发布读取。
 
@@ -368,7 +371,7 @@ python3 -m unittest discover -s src/functions/test -p 'test_upper_body_*.py'
 
 ### 现场只读IK与统计
 
-`upper_body_teleop_observe`连接SDK及原始机器人反馈，使用实际FK建立Grip参考，保存XR与IK两份日志。
+`upper_body_teleop_observe`连接SDK、原始机器人反馈及MC的HAL手臂位置命令，保存XR与IK两份日志。
 补偿关闭，拒绝`--execute`，不创建运动发布器。在机器人容器运行：
 
 ```bash
@@ -383,5 +386,20 @@ ros2 run aimdk_functions upper_body_teleop_stats /实际路径/upper_body_观测
 
 `--input-timeout`显式配置接收、源时间停滞及排队年龄时限；跟踪失效、断链或时间回退终止本次观测。
 缺少跟踪或重定位字段时按输入包配置及现场操作约定处理。反馈时限沿用0.5秒，可在0.2..1秒内配置。
+
+机器人侧参考按以下三种情况建立，手柄增量始终相对于本次Grip按下时的手柄位姿：
+
+| 情况 | 机器人侧TCP与IK参考 |
+| --- | --- |
+| 每侧首次Grip | 使用按下时新鲜的`/aima/hal/joint/arm/command`位置，建立该侧FK、IK种子、SEW和实验范围起点；分支从空状态开始跟踪 |
+| 同一会话松开后重按 | 使用该侧最后已接受理想目标的FK，延续IK种子、SEW、分支和实验范围起点 |
+| 中断后恢复 | 当前入口异常退出，操作者重启入口；重新采样HAL命令，各侧首次Grip重新建立参考 |
+
+首次接管的参考与双侧IK候选共同提交，任一侧失败均不更新。未接管侧保持启动采样的HAL目标。
+实际手臂反馈继续参与故障、源时间与时效检查；记录HAL命令与实际位置差及源时间差。
+`mapping_reference`关联输入序号、各侧参考来源、参考关节及反馈序号；首次接管标记见`rebase_sides`。
+夹爪初值取实际开度，接管期间按映射配置更新，松开后保持已接受开度。
+当前只读入口补偿关闭；后续执行接入须沿用理想目标与补偿后发送目标分离的约定。
+
 统计读回输入与结果关联、双侧残差及耗时P50/P95/P99/最大值；20ms计数仅用于观测计算负载。
 统计退出0表示读回成功；`replay_complete`表示日志中每个输入均有成功结果及正常结束记录。

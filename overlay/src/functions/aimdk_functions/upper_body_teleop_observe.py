@@ -38,8 +38,34 @@ def parser():
     result.add_argument('--timeout', type=float, default=5., help='初始反馈等待1..10秒')
     result.add_argument('--duration', type=float, help='观测秒数，省略时持续至Ctrl-C')
     result.add_argument('--execute', action='store_true', help='首轮只读，提供此参数立即拒绝')
-    result.set_defaults(compensation=False)
+    result.set_defaults(compensation=False, arm_start_source='mc-command')
     return result
+
+
+def command_reference(frame, values, solver, config, diagnostics):
+    """返回TCP参考、夹爪参考及首次接管候选；values须为已校验时效的完整反馈。
+
+    每侧首次Grip取HAL位置命令，同会话重按沿用理想目标；命令参考随IK候选提交。
+    实际关节只记录偏差，夹爪沿用已接受开度，启动值取实际反馈。
+    """
+    command = CapturedTarget(values['arm_command'].positions, values['hand'].positions)
+    rebase_sides = tuple(side for side in ('left', 'right')
+                         if side not in solver.command_reference_sides
+                         and getattr(frame, side).grip >= config.grip_threshold)
+    reference = solver.accepted
+    for side in rebase_sides:
+        index = ('left', 'right').index(side)
+        reference = reference.for_arm(side, command.arm_rad[index * 7:index * 7 + 7])
+    diagnostics.record(
+        'mapping_reference', input_seq=frame.seq, rebase_sides=list(rebase_sides),
+        sources={side: 'mc-command' if side in rebase_sides else 'accepted_ideal'
+                 for side in ('left', 'right')},
+        reference_arm_rad=list(reference.arm_rad),
+        streams={name: value.serial for name, value in values.items()},
+        command_minus_actual_rad=[a-b for a, b in zip(command.arm_rad, values['arm'].positions)],
+        command_stamp_s=values['arm_command'].stamp, state_stamp_s=values['arm'].stamp,
+        source_skew_s=values['arm_command'].stamp-values['arm'].stamp)
+    return solver.tcp_poses(reference), reference.hand_openings, command, rebase_sides
 
 
 def live_frames(source, recorder, port, options):
@@ -115,7 +141,8 @@ def main(args=None):
             log_directory(options.log_dir), command='upper_body_teleop_observe',
             options=vars(options), code_sha256=code_manifest(),
             mapping_config=asdict(mapping_config), input_config=asdict(input_config),
-            execute=False, compensation_enabled=False, reference_policy='actual_feedback_on_grip')
+            execute=False, compensation_enabled=False,
+            reference_policy='mc_command_first_grip_then_accepted_ideal_restart_on_failure')
         xr_log = XRLog(
             options.xr_output, device_id=options.device_id, input_config=asdict(input_config),
             sdk_library=str(source.library_path),
@@ -134,27 +161,24 @@ def main(args=None):
         port = UpperBodyExecutor(rclpy, node, options, diagnostics)
         arms = {side: ArmKinematics(side, tcp_mode='gripper') for side in ('left', 'right')}
         values = port.capture(refreshed_after=time.monotonic())
-        captured = CapturedTarget(values['arm'].positions, values['hand'].positions)
+        captured = port.capture_target(values)
         solver = DualArmOnlineIK(captured, arms)
         diagnostics.record('snapshot', arm_names=list(ARM_NAMES),
                             streams={name: asdict(value) for name, value in values.items()})
         diagnostics.record('online_ik_config', **solver.describe())
         session = Session(mapping_config)
 
-        def actual_reference(frame):
-            """用新鲜实际反馈计算本帧的左右TCP参考，记录其反馈序号关联。"""
+        def live_reference(frame):
+            """校验输入与反馈时效，生成HAL首次接管或理想目标重接管参考。"""
             values = port.feedback.checked()
-            actual = CapturedTarget(values['arm'].positions, values['hand'].positions)
-            diagnostics.record('mapping_feedback', input_seq=frame.seq,
-                                streams={name: value.serial for name, value in values.items()})
             if time.monotonic() - frame.received_monotonic_s > options.input_timeout:
                 raise InputUnavailable('映射前XR帧年龄超过显式input-timeout')
-            return solver.tcp_poses(actual), actual.hand_openings
+            return command_reference(frame, values, solver, mapping_config, diagnostics)
 
         print(f'只读IK日志：{diagnostics.path}；XR日志：{xr_log.path}', flush=True)
         source.start()
         replay_frames(live_frames(source, recorder, port, options), session, solver,
-                      diagnostics, reference_provider=actual_reference)
+                      diagnostics, reference_provider=live_reference)
         reason, result = 'completed', 0
     except KeyboardInterrupt:
         reason, result = 'interrupted', 130

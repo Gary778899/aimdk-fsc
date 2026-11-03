@@ -20,7 +20,7 @@ class UpperBodyExecutor:
     def __init__(self, rclpy, node, options, diagnostics):
         """创建只读反馈适配，execute时持续监视URS；发布器延迟到enable_commands创建。"""
         self.rclpy, self.node, self.options, self.diagnostics = rclpy, node, options, diagnostics
-        # 共用执行器的只读遥操入口沿用实际反馈起点。
+        # 起点来源由入口显式指定，旧调用方保留实际反馈默认值。
         self.arm_start_source = getattr(options, 'arm_start_source', 'state')
         self.feedback = UpperBodyFeedbackPort(
             node, diagnostics, require_urs=options.execute,

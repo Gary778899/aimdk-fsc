@@ -30,6 +30,8 @@ def parser():
     result.add_argument('--feedback-timeout', type=float, default=.5,
                         help='复用既有接收间隔/源停滞/源年龄上限，0.2..1秒')
     result.add_argument('--check-cases', action='store_true', help='采样后增加纯数学边界及失败用例')
+    result.add_argument('--include-arm-command', action='store_true',
+                        help='同时采样HAL手臂位置命令，供遥操命令起点回放使用')
     result.add_argument('--log-dir', help='默认自动探测工作区log目录')
     result.add_argument('--label', default='', help='姿态或本次实验说明')
     result.add_argument('--sdk-version', default='unknown', help='操作者核对的SDK版本')
@@ -65,7 +67,8 @@ def collect_snapshots(options, diagnostics):
     try:
         node = rclpy.create_node('upper_body_kinematics_check')
         port = UpperBodyFeedbackPort(node, diagnostics, require_urs=False,
-                                     feedback_timeout=options.feedback_timeout)
+                                     feedback_timeout=options.feedback_timeout,
+                                     arm_command=options.include_arm_command)
         due = time.monotonic()
         deadline = due + options.timeout
         last_arm_stamp = None
