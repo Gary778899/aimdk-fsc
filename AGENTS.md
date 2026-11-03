@@ -40,13 +40,13 @@
 | 第三方依赖 | `underlay/src/ruckig/` → `ruckig` | SDK 携带的在线轨迹生成库；业务代码按需依赖，不在其中放实验逻辑。 |
 | 官方示例 | `underlay/src/examples/` → `examples`；`underlay/src/py_examples/` → `py_examples` | C++／Python SDK 调用示例，用于理解接口；自研功能分别进入下述自研包，不把示例模块作为公共库。 |
 | 官方诊断工具 | `underlay/src/robotop/` → `robotop` | 官方 SDK 自带的终端状态、日志、通信与故障诊断工具，以及独立 Orin 资源监视节点；不承载自研采集或实验状态机。 |
-| 自研实验工具 | `overlay/src/test/` → `aimdk_test` | 头部、手臂诊断与运动实验。入口为 `aimdk_test/head_test.py`、`arm_test.py`；`*_core.py` 为无 ROS 导入的校验／算法核心，`arm_test_motion.py` 为手臂 ROS 执行适配，`head_test_diagnostics.py` 提供实验 JSONL 日志。这里的 `test` 是业务包目录，不是全工作区单元测试目录。 |
+| 自研实验工具 | `overlay/src/test/` → `aimdk_test` | 头部实验与上肢命令只读诊断。入口为 `aimdk_test/head_test.py`、`upper_body_command_watch.py`；`head_test_core.py` 为无 ROS 导入的校验／算法核心，`head_test_diagnostics.py` 提供实验 JSONL 日志。这里的 `test` 是业务包目录，不是全工作区单元测试目录。 |
 | 自研功能命令 | `overlay/src/functions/` → `aimdk_functions` | 独立实用功能：`volume_control.py`（音量／静音）、`upper_body_control.py`（URS 下单臂／双臂关节、TCP及夹爪控制）。统一规划在 `upper_body_control_core.py`，执行在 `upper_body_execution.py`，反馈校验复用 `dual_arm_control_core.py`，日志在 `upper_body_diagnostics.py`；不依赖测试包，也不作为所有公共代码的汇总包。 |
 | 自研遥操输入 | `overlay/src/remote_control/` → `remote_control` | XR完整帧、SDK输入、Grip会话、坐标映射和输入日志；不依赖AimDK。机器人双臂IK与执行适配保留在`aimdk_functions`。 |
 | 自研只读观测 | `overlay/src/locomotion_wrapper/` → `locomotion_wrapper` | 厂商关节状态聚合与标准 IMU 校验转发，不含运动控制或策略推理。节点在 `src/hardware_wrapper_node.cpp`，纯校验在 `include/locomotion_wrapper/state_validation.hpp`，配置在 `config/`，启动在 `launch/`，校验测试在 `test/`；`joint_watch.py` 仅监视标准关节状态。本轮不参与同步或构建。 |
-| 自研数据采集 | `overlay/src/data_collection/` → `data_collection` | 独立订阅 SDK 双臂／夹爪反馈，生成统一 JSONL 帧并可选录制原始 MCAP，通过 ZeroMQ START／STOP／STATUS 控制录制。节点在 `src/data_collection_node.cpp`；`launch/data_collection.launch.py` 单独启动采集器，`robot_data_collection.launch.py` 为同包内的启动别名。 |
+| 自研数据采集 | `overlay/src/data_collection/` → `data_collection` | 独立订阅 SDK 双臂／夹爪反馈，生成统一 JSONL 帧并可选录制原始 MCAP，通过 ZeroMQ START／STOP／STATUS 控制录制。节点在 `src/data_collection_node.cpp`；`launch/data_collection.launch.py` 单独启动采集器。 |
 
-新增 `aimdk_test`／`aimdk_functions` 命令时，将模块放在相应 Python 包中，在各自 `setup.py` 的 `console_scripts` 注册，并在 `package.xml` 声明依赖；命令使用 ROS 2 包名，而非外层目录名，如 `ros2 run aimdk_test arm_test`。
+新增 `aimdk_test`／`aimdk_functions` 命令时，将模块放在相应 Python 包中，在各自 `setup.py` 的 `console_scripts` 注册，并在 `package.xml` 声明依赖；命令使用 ROS 2 包名，而非外层目录名，如 `ros2 run aimdk_test head_test`。
 
 ## 关键约束
 

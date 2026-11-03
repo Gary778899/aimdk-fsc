@@ -24,7 +24,7 @@
 
 ### 构建前准备依赖
 
-依赖声明见 [package.xml](package.xml)。`colcon build` 和 `source` 环境脚本 均不会安装系统依赖。下面的清单以已有 SDK、ROS 2 Humble C++ 开发环境及可用的编译工具链为基础，包含本包直接使用的系统包及 rosbag2／MCAP 插件加载链需要的系统开发包：
+依赖声明见 [package.xml](package.xml)。`colcon build` 和 `source` 环境脚本均不会安装系统依赖。下面的清单以已有 SDK、ROS 2 Humble C++ 开发环境及可用的编译工具链为基础，包含本包直接使用的系统包及 rosbag2／MCAP 插件加载链需要的系统开发包：
 
 | Ubuntu 22.04 系统包 | 用途／引入位置 |
 | --- | --- |
@@ -37,47 +37,7 @@
 | `libtinyxml2-dev` | `rosbag2_cpp／rosbag2_storage → pluginlib → tinyxml2_vendor` |
 | `libconsole-bridge-dev` | `pluginlib → class_loader → console_bridge_vendor` |
 
-Ubuntu 22.04（Jammy）的 `libzmq3-dev` 已包含 `/usr/include/zmq.hpp`、`zmq_addon.hpp` 和架构对应的 `pkgconfig/libzmq.pc`，见 [Ubuntu 官方 arm64 文件清单](https://packages.ubuntu.com/jammy/arm64/libzmq3-dev/filelist)。本环境不单独安装 `cppzmq-dev`；此前将其他发行版的拆包方式套用于 Jammy 的说明和安装命令已修正。apt 若因某个包名无法定位而退出，该次命令不会完成其他包的安装，需移除错误包名后重新执行。
-
-先核实容器的安装目录和包管理状态。2026-10-26 用户反馈确认：`/opt/ros` 是只读 overlay 挂载；apt 尝试安装的 7 个 ROS 包均为 `install reinstreq half-installed`，缺少文件清单和校验文件。用户随后已单独配置 `libzstd-dev:arm64`，确认状态为 `install ok installed`；CMake 已推进到第 18 行的 ZeroMQ `libzmq` 检查。此前 CMake 已能读取相应 ROS 配置文件，说明现有 ROS 文件不能单凭 apt 数据库中的“未安装”判定为缺失。检查命令：
-
-```bash
-findmnt -T /opt/ros/humble -o TARGET,SOURCE,FSTYPE,OPTIONS
-findmnt -T /opt/ros/humble/include/mcap_vendor/mcap/crc32.hpp \
-  -o TARGET,SOURCE,FSTYPE,OPTIONS
-dpkg --audit
-```
-
-若先前的 ROS 包安装已失败，先根据 `dpkg --audit` 和挂载信息确定恢复方式，不直接运行 `apt-get -f install`、强制删除 ROS 包或将挂载改为可写。SDK 原有 ROS 文件与 dpkg 数据库的归属关系核实前，这些操作可能重复触发只读写入失败或处理 SDK 提供的文件。
-
-对于上述已确认的 `libzstd-dev:arm64` 解包状态，可仅完成该系统开发包的配置，无需重新安装 ROS 包：
-
-```bash
-dpkg --configure libzstd-dev:arm64
-dpkg-query -W -f='${binary:Package}\t${Status}\t${Version}\n' libzstd-dev
-```
-
-配置成功不会自动修复 7 个 ROS 包的 dpkg 状态。用户进一步检查 `/var/lib/dpkg/info/`，对应 7 个失败 ROS 包均未找到信息文件，即没有留下文件清单或维护脚本。在这些已核实条件下，可以先备份 dpkg 数据库，再定向移除本次失败安装的记录。以下命令仅适用于这组状态；后续环境变化时应重新核对，不能用于正常安装的 ROS 包：
-
-```bash
-(
-  set -e
-  ros_dpkg_backup=$(mktemp -d /root/dpkg-before-ros-cleanup.XXXXXX)
-  cp -a /var/lib/dpkg "$ros_dpkg_backup/"
-  printf 'dpkg backup: %s\n' "$ros_dpkg_backup"
-  dpkg --no-triggers --remove --force-remove-reinstreq \
-    ros-humble-rosbag2-storage-mcap \
-    ros-humble-rosbag2-cpp \
-    ros-humble-rosbag2-storage \
-    ros-humble-mcap-vendor \
-    ros-humble-shared-queues-vendor \
-    ros-humble-yaml-cpp-vendor \
-    ros-humble-zstd-vendor
-  dpkg --audit
-)
-```
-
-`--force-remove-reinstreq` 允许处理标记为需要重装的失败包；这里的依据是这些包在本次新安装前未登记，安装因只读挂载失败，而且当前不存在对应 dpkg 信息文件。命令保留依赖检查，并禁止本步处理其他包的待执行触发器。若移除失败或审计仍报告问题，先根据输出处理，不继续 apt 安装。2026-10-26 用户已完成上述备份和定向移除，随后 `dpkg --audit` 无输出，确认此次失败记录已清理；容器构建仍未通过。
+已知机器人容器`/opt/ros`为只读挂载。历史apt失败、dpkg恢复过程及包名迁移依据见[历史排障记录](../../../docs/archive/data_collection_troubleshooting_20261026.md)。
 
 在确认系统目录可写且包管理状态正常后，可在容器 root 终端一次准备以上 **Ubuntu 系统包**；普通用户使用相应的管理员权限。这条命令不列入 `ros-humble-*` 包：
 
@@ -148,8 +108,6 @@ STOP 成功排空队列、关闭文件并写入摘要后，节点终端输出 `R
 | `zmq_bind_address`／`zmq_port` | `127.0.0.1`／`5555` |
 | `robot_model`／`firmware` | 均为 `unknown`，可填写实际机型与固件版本，写入会话元数据 |
 
-旧入口 `robot_data_collection.launch.py` 是当前独立入口的别名，参数相同。旧 `bag_root_dir`、`joint_state_topic`、`imu_topic` 参数已不适用。
-
 ## 文件与读回
 
 每次新会话创建独立的 `data_<YYYYMMDD>_<HHMMSS>_<九位纳秒>_UTCp0800_<PID>_<序号>/` 目录，例如：
@@ -178,31 +136,11 @@ ros2 run data_collection inspect_collection /ABSOLUTE/SESSION_DIR
 
 `complete` 表示会话已正常关闭且没有存储错误，`data_complete` 还检查无数据、缺流、无效字段、已观察异常及记录丢弃。仍应结合实际频率、复用比例与接收年龄判断可用性，不能据此认定有 50 Hz 的独立新样本。未收尾会话会报告实际可读数据及摘要差异；当前工具**不验证原始 MCAP 内容**。本版本不提供 CSV 导出或动作回放。
 
-## 包名迁移
+## 更新后验证
 
-采集包由 `data_collection_edge_agent` 重命名为 `data_collection`，源码目录为
-`src/data_collection/`。主启动文件为 `data_collection.launch.py`，节点可执行文件与
-默认节点名均为 `data_collection_node`；C++ 头文件前缀及命名空间改为
-`data_collection`，节点类改为 `DataCollectionNode`。
-`robot_data_collection.launch.py` 继续作为新包内的启动别名。
-旧包名和 `data_collection_edge_agent.launch.py` 不再提供兼容入口；外部脚本中的
-`ros2 run`、`ros2 launch`、包资源查询及节点名引用须同步更新。
-本次只调整名称，录制参数、ZMQ 协议、映射与数据格式保持不变，已有采集数据无需迁移。
+本次移除旧启动别名，统一使用`data_collection.launch.py`。rsync保护构建及安装产物，重新构建不会保证删除旧启动文件；在机器人端核实`ros2 pkg prefix data_collection`指向的安装目录后，定向清理残留的旧启动文件。同步排除规则保持现状。
 
-同步后在机器人容器内完成以下步骤：
-
-1. 停止仍在运行的旧采集节点，确认录制已正常收尾。
-2. 核对容器实际构建／安装目录、overlay 加载顺序和旧包来源。现有 rsync 排除规则保护
-   构建及安装产物，源码改名不会自动移除旧包；确认后定向清理旧包产物。
-   若为合并安装布局，不能把整个共享安装目录当作旧包目录删除。
-3. 在未加载旧工作区 overlay 的终端加载 SDK／Humble 环境，按本文命令构建新包，
-   再加载实际安装目录的 `setup.bash`。若使用自定义构建／安装目录，保留相应参数。
-4. 用 `ros2 pkg prefix data_collection`、`ros2 pkg executables data_collection` 核对新包来源
-   及三个可执行入口；用 `ros2 pkg prefix data_collection_edge_agent` 排查残留旧包。
-5. 使用新入口录制、停止并读回一次数据，确认映射加载和文件收尾；若使用启动别名，
-   同时验证该入口。改名前的验证结果不能替代改名后的容器构建与运行验证。
-
-此次重命名仅完成本地静态检查，尚未完成机器人容器内的构建与运行验证。
+在机器人Humble容器构建后，用当前入口完成START、STATUS、STOP和读回：录制中重复START保持原会话，正常停止后重复STOP返回ACK；STATUS计数与读回结果一致。启用MCAP时检查原始录制输出。队列满仍丢弃新记录并分别计数，写盘错误仍关闭接收门并保留首次原因；这些异常路径尚待容器验证。
 
 ## 修改映射与迁移平台
 
@@ -216,3 +154,12 @@ ros2 run data_collection inspect_collection /ABSOLUTE/SESSION_DIR
 数值转换为 `输出 = 原值 × scale + offset`，可配置位置／速度的单位、方向与零位；`*_raw` 和整数状态字段保持原值，不允许缩放或偏置。配置启动时校验并冻结，修改后需重启节点。
 
 通过 `mapping_file:=/ABSOLUTE/PATH/platform.json` 选择自定义配置。当前输入适配器仅支持表中的两种 SDK 消息；相同消息结构主要修改 JSON，其他消息结构或通信协议需要补充输入适配器，不能仅更改消息类型字符串。
+
+## 实现与异常处理入口
+
+- `DataCollectionNode`管理START／STOP、采样门及会话代号，关闭采样门后再等待文件排空，防止旧回调跨会话写入。
+- `StateMapper`负责来源及字段校验，用质量标记保留缺失、故障和时间异常。
+- `SessionWriter::Impl::enqueue_locked()`统一处理JSONL帧与原始消息的队列容量、丢弃计数和入队通知；`fail_locked()`统一锁存首次存储错误并关闭接收门。
+- `finish()`统一排空、关闭与摘要写入；STATUS和读回检查分别保留运行时状态与落盘数据核对职责。
+
+本次整合仅完成本地静态检查，尚未在机器人容器构建或验证。

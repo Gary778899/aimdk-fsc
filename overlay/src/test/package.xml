@@ -2,7 +2,7 @@
 <package format="3">
   <name>aimdk_test</name>
   <version>0.1.0</version>
-  <description>Custom head and arm diagnostic and acceptance tools for AimDK.</description>
+  <description>Head experiments and read-only upper-body command diagnostics for AimDK.</description>
   <maintainer email="gary@example.com">gary</maintainer>
   <license>TODO: License declaration</license>
 

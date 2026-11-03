@@ -41,6 +41,20 @@ def validate_target(captured, target, options):
                                  f'执行范围=[{lower}, {upper}] rad')
 
 
+def prepare_motion_target(captured, ideal, options, compensation, values, blend):
+    """统一生成并校验预览或执行目标，返回完整目标及补偿诊断。
+
+    captured为冻结起点，ideal为本帧理想目标，options指定动作及所选侧；
+    compensation为空时保留理想目标，否则使用values反馈和blend进度计算偏置。
+    所选关节越限或未选目标改变时抛出ControlFailure，不裁剪目标。
+    """
+    target, details = ideal, None
+    if compensation is not None:
+        target, details = compensation.apply(captured, ideal, values, blend)
+    validate_target(captured, target, options)
+    return target, details
+
+
 @dataclass(frozen=True)
 class MotionTrajectory:
     """同一时长内的完整双臂和夹爪目标；line按预先接受的双侧路径插值。"""

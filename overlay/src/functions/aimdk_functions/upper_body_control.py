@@ -12,7 +12,9 @@ import sys
 import time
 
 from .dual_arm_control_core import ARM_NAMES, JOINT_TAGS, ControlFailure, interpolate
-from .upper_body_control_core import ArmCompensationGroup, plan_motion, selected_sides
+from .upper_body_control_core import (
+    ArmCompensationGroup, plan_motion, prepare_motion_target, selected_sides,
+)
 from .upper_body_diagnostics import UpperBodyLog, code_manifest, log_directory
 from .upper_body_execution import UpperBodyExecutor
 from .upper_body_kinematics.adapter import ArmKinematics
@@ -134,17 +136,13 @@ def validate_options(options):
 
 def preview_motion(trajectory, options, compensation, values, diagnostics):
     """按统一20ms网格预览完整轨迹及补偿；任何候选越限在创建发布器前拒绝。"""
-    from .upper_body_control_core import validate_target
-
     count = int(math.ceil(options.duration / .02))
     for index in range(count + 1):
         seconds = options.duration * index / count
         ideal = trajectory.at(seconds)
-        target, details = ideal, None
-        if compensation is not None:
-            target, details = compensation.apply(trajectory.captured, ideal, values,
-                                                  interpolate((0.,), (1.,), seconds, options.duration)[0])
-        validate_target(trajectory.captured, target, options)
+        target, details = prepare_motion_target(
+            trajectory.captured, ideal, options, compensation, values,
+            interpolate((0.,), (1.,), seconds, options.duration)[0])
         diagnostics.record('plan_point', index=index, time_s=seconds, ideal_arm_rad=list(ideal.arm_rad),
                            sent_arm_rad=list(target.arm_rad), hand_openings=list(target.hand_openings),
                            compensation=details)

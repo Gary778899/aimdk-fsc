@@ -17,13 +17,11 @@ setup(
     zip_safe=True,
     maintainer='gary',
     maintainer_email='gary@example.com',
-    description='Custom head and arm diagnostic and acceptance tools for AimDK.',
+    description='Head experiments and read-only upper-body command diagnostics for AimDK.',
     license='TODO: License declaration',
     entry_points={
         'console_scripts': [
             'head_test = aimdk_test.head_test:main',
-            'arm_test = aimdk_test.arm_test:main',
-            'upper_body_sequence_test = aimdk_test.upper_body_sequence_test:main',
             'upper_body_command_watch = aimdk_test.upper_body_command_watch:main',
         ],
     },

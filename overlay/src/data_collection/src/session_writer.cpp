@@ -250,17 +250,9 @@ public:
     if (!accepting_) {
       return false;
     }
-    increment(frame_counts_, "submitted");
-    if (queue_.size() >= capacity_) {
-      increment(frame_counts_, "dropped");
-      return false;
-    }
     Record record;
     record.frame = std::move(frame);
-    queue_.push_back(std::move(record));
-    queue_peak_ = std::max(queue_peak_, queue_.size());
-    condition_.notify_one();
-    return true;
+    return enqueue_locked(std::move(record), frame_counts_);
   }
 
   /** @brief 提交配置话题的独占序列化样本及接收时刻；参数非法抛出异常。 */
@@ -276,22 +268,13 @@ public:
     if (found == topics_.end() || found->second != type || !message) {
       throw std::invalid_argument("raw message does not match a configured topic/type");
     }
-    auto & counts = raw_counts_.at(topic);
-    increment(counts, "submitted");
-    if (queue_.size() >= capacity_) {
-      increment(counts, "dropped");
-      return false;
-    }
     Record record;
     record.raw = true;
     record.topic = topic;
     record.type = type;
     record.message = std::move(message);
     record.receive_time_ns = receive_time_ns;
-    queue_.push_back(std::move(record));
-    queue_peak_ = std::max(queue_peak_, queue_.size());
-    condition_.notify_one();
-    return true;
+    return enqueue_locked(std::move(record), raw_counts_.at(topic));
   }
 
   /** @brief 返回接收门状态；错误或 STOP 后立即为 false。 */
@@ -305,9 +288,7 @@ public:
   void fail(const std::string & reason)
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    set_error_locked(reason.empty() ? "unspecified collection failure" : reason);
-    accepting_ = false;
-    condition_.notify_all();
+    fail_locked(reason);
   }
 
 private:
@@ -321,6 +302,33 @@ private:
     std::shared_ptr<rclcpp::SerializedMessage> message;
     int64_t receive_time_ns{0};
   };
+
+  /** @brief 统一执行容量检查、入队及计数；调用方持状态锁且已校验接收门和记录类型。
+   * @param record 待写记录。 @param counts 对应统一帧或原始话题的计数。
+   * @return 成功入队为 true；队列满则丢弃新记录并计数，返回 false。
+   */
+  bool enqueue_locked(Record record, Json & counts)
+  {
+    increment(counts, "submitted");
+    if (queue_.size() >= capacity_) {
+      increment(counts, "dropped");
+      return false;
+    }
+    queue_.push_back(std::move(record));
+    queue_peak_ = std::max(queue_peak_, queue_.size());
+    condition_.notify_one();
+    return true;
+  }
+
+  /** @brief 锁存首次错误、关闭接收门并唤醒写盘线程；调用方持状态锁。
+   * @param reason 不可恢复错误，空值使用通用采集错误描述。
+   */
+  void fail_locked(const std::string & reason)
+  {
+    set_error_locked(reason.empty() ? "unspecified collection failure" : reason);
+    accepting_ = false;
+    condition_.notify_all();
+  }
 
   /** @brief 清空当前会话计数，并预登记全部预期流以识别从未到达的来源。 */
   void reset_statistics()
@@ -452,8 +460,7 @@ private:
         }
       } catch (const std::exception & error) {
         std::lock_guard<std::mutex> lock(mutex_);
-        set_error_locked(std::string("recording write failed: ") + error.what());
-        accepting_ = false;
+        fail_locked(std::string("recording write failed: ") + error.what());
         if (!written) {
           count_discard_locked(record);
         }

@@ -6,12 +6,24 @@ import math
 
 from .dual_arm_control_core import ControlFailure, check_arm, interpolate
 from .upper_body_ros import UpperBodyFeedbackPort, build_upper_body_command
-from .upper_body_control_core import validate_target
+from .upper_body_control_core import prepare_motion_target
 from .upper_body_cartesian_core import CapturedTarget
 
 
 ARM_TRACKING_TOLERANCE = math.radians(5)
 ARM_ENDPOINT_TOLERANCE = math.radians(5)
+PUBLISH_PERIOD_S = .02
+PUBLISH_GAP_LIMIT_S = .08
+ENDPOINT_STABLE_S = .3
+SETTLING_TIMEOUT_S = 2.
+
+
+def check_publish_gap(previous, now):
+    """返回相邻发布间隔秒数；首次返回None，超过既有80ms上限抛出ControlFailure。"""
+    gap = None if previous is None else now - previous
+    if gap is not None and gap > PUBLISH_GAP_LIMIT_S:
+        raise ControlFailure(f'命令发布间隔{gap:.3f}秒超过{PUBLISH_GAP_LIMIT_S:g}秒')
+    return gap
 
 
 class UpperBodyExecutor:
@@ -123,7 +135,7 @@ class UpperBodyExecutor:
             raise ControlFailure('未显式指定--execute')
         self.captured = captured
         self.publisher = self.node.create_publisher(UpperBodyCommandArray, '/mc/upper_body_command', 10)
-        self.timer = self.node.create_timer(.02, self.publish)
+        self.timer = self.node.create_timer(PUBLISH_PERIOD_S, self.publish)
         deadline = time.monotonic() + self.options.timeout
         while self.publisher.get_subscription_count() == 0:
             self.spin()
@@ -131,7 +143,8 @@ class UpperBodyExecutor:
                 raise ControlFailure('上肢命令DDS订阅匹配超时')
         values = self.feedback.checked()
         self.check_start(values)
-        self.diagnostics.record('command_transport', period_s=.02, publish_gap_limit_s=.08,
+        self.diagnostics.record('command_transport', period_s=PUBLISH_PERIOD_S,
+                                publish_gap_limit_s=PUBLISH_GAP_LIMIT_S,
                                 subscription_count=self.publisher.get_subscription_count(),
                                 source='native_upper_body', mode='URS/RUNNING')
 
@@ -141,27 +154,19 @@ class UpperBodyExecutor:
             return
         values = self.feedback.checked()
         now = time.monotonic()
-        gap = None if self.last_publish is None else now - self.last_publish
-        if gap is not None and gap > .08:
-            raise ControlFailure(f'命令发布间隔{gap:.3f}秒超过0.08秒')
+        check_publish_gap(self.last_publish, now)
         elapsed = 0. if self.last_sent is None else now - self.began
         ideal = self.trajectory.at(elapsed)
-        target = ideal
-        self.compensation_details = None
-        if self.compensation is not None:
-            blend = interpolate((0.,), (1.,), elapsed, self.options.duration)[0]
-            target, self.compensation_details = self.compensation.apply(
-                self.captured, ideal, values, blend)
+        target, self.compensation_details = prepare_motion_target(
+            self.captured, ideal, self.options, self.compensation, values,
+            interpolate((0.,), (1.,), elapsed, self.options.duration)[0])
         self.command_target = target
-        validate_target(self.captured, target, self.options)
         check_arm(values['arm'].positions, target.arm_rad, tolerance=ARM_TRACKING_TOLERANCE)
         # 双侧计算完成后再次校验时效，并以实际发送时刻检查既有间隔。
         self.feedback.checked()
         msg = build_upper_body_command(self.node, target, self.sequence % (2 ** 32))
         sent_at = time.monotonic()
-        gap = None if self.last_publish is None else sent_at - self.last_publish
-        if gap is not None and gap > .08:
-            raise ControlFailure(f'命令发布间隔{gap:.3f}秒超过0.08秒')
+        gap = check_publish_gap(self.last_publish, sent_at)
         self.publisher.publish(msg)
         self.last_sent = target
         self.last_sent_compensation = self.compensation_details
@@ -192,7 +197,8 @@ class UpperBodyExecutor:
                                 target_rad=list(target.arm_rad), duration_s=self.options.duration,
                                 tracking_tolerance_deg=math.degrees(ARM_TRACKING_TOLERANCE),
                                 endpoint_tolerance_deg=math.degrees(ARM_ENDPOINT_TOLERANCE),
-                                settling_timeout_s=2., endpoint_stable_s=.3,
+                                settling_timeout_s=SETTLING_TIMEOUT_S,
+                                endpoint_stable_s=ENDPOINT_STABLE_S,
                                 interpolation=trajectory.kind,
                                 ideal_cartesian_straight_line=trajectory.kind == 'line',
                                 compensation_enabled=self.compensation is not None,
@@ -214,7 +220,7 @@ class UpperBodyExecutor:
                 reached = all(abs(actual - desired) <= ARM_ENDPOINT_TOLERANCE
                               for actual, desired in zip(values['arm'].positions, expected.arm_rad))
                 stable_since = (stable_since if stable_since is not None else now) if newer and reached else None
-                if stable_since is not None and now - stable_since >= .3:
+                if stable_since is not None and now - stable_since >= ENDPOINT_STABLE_S:
                     self.stop()
                     self.diagnostics.record('endpoint_confirmed', arm_rad=list(values['arm'].positions),
                                             target_rad=list(expected.arm_rad),
@@ -224,11 +230,12 @@ class UpperBodyExecutor:
                                             hand_opening_check=False, hand_state_check=False,
                                             published_count=self.sequence)
                     return values
-                if now > arrival + 2.:
+                if now > arrival + SETTLING_TIMEOUT_S:
                     self.diagnostics.record('endpoint_timeout', arm_rad=list(values['arm'].positions),
                                             target_rad=list(expected.arm_rad), ideal_target_rad=list(target.arm_rad), fresh_feedback=newer,
                                             hand_states=values['hand'].data['hands'])
-                    raise ControlFailure('关节终点未在额外2秒内连续确认0.3秒')
+                    raise ControlFailure(f'关节终点未在额外{SETTLING_TIMEOUT_S:g}秒内'
+                                         f'连续确认{ENDPOINT_STABLE_S:g}秒')
 
     def stop(self):
         """先清除目标并取消定时器，停止本脚本发布；不发送返程、模式切换或急停命令。"""

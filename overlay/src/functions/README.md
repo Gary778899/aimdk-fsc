@@ -240,7 +240,7 @@ ROS节点创建后立即建立反馈订阅，先于模式查询和运动学模�
 | 模块 | 职责 |
 | --- | --- |
 | `upper_body_control.py` | 参数、单次生命周期与日志 |
-| `upper_body_control_core.py` | 分侧目标、统一轨迹、双臂合并与补偿组装 |
+| `upper_body_control_core.py` | 分侧目标、统一轨迹、双臂合并；`prepare_motion_target()`统一生成补偿目标并校验所选关节范围及未选目标保持 |
 | `upper_body_execution.py` / `upper_body_mode.py` | 单发布器、时间调度、终点确认／有界模式查询 |
 | `upper_body_cartesian_core.py` | 完整目标契约、TCP端点与直线纯IK规划 |
 | `upper_body_ros.py` / `dual_arm_control_core.py` | ROS反馈适配／纯解码、时效、错误锁存、关节插值 |
@@ -259,6 +259,8 @@ ros2 run aimdk_functions arm_compensation_probe --tag URS
 
 probe保存metadata、图快照、原始events、summary与report；其退出码0表示观测完整且模式匹配，
 不作为补偿有效性结论。详细字段和历史记录见[整理前说明](../../../docs/archive/upper_body_commands_before_unification_20261030.md)。
+
+预览和执行均调用`prepare_motion_target()`，执行器复用`check_publish_gap()`检查计算前与实际发送前的发布间隔。发布周期、间隔上限、终点稳定时间和额外等待时限集中在`upper_body_execution.py`，数值沿用上文约定。反馈错误、时效及模式检查继续由既有反馈和模式模块负责。本次整合仅完成本地静态检查，待机器人Humble容器构建与执行验证；遥操代码保持原实现。
 
 ## 机器人端验收与待办
 
