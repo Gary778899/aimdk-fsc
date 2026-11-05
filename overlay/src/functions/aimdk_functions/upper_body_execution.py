@@ -37,7 +37,8 @@ class UpperBodyExecutor:
         self.feedback = UpperBodyFeedbackPort(
             node, diagnostics, require_urs=options.execute,
             feedback_timeout=options.feedback_timeout, compensation=options.compensation,
-            arm_command=self.arm_start_source == 'mc-command')
+            arm_command=self.arm_start_source == 'mc-command',
+            record_body=getattr(options, 'record_body', False))
         self.start_feedback = self.start_command = None
         self.publisher = self.timer = self.command_target = None
         self.trajectory = self.began = None

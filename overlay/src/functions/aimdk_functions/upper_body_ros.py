@@ -22,11 +22,12 @@ class UpperBodyFeedbackPort:
     """复用现有解码、源时间监视及错误锁存，不创建发布器、不请求模式切换。"""
 
     def __init__(self, node, diagnostics, *, require_urs=False, feedback_timeout=.5,
-                 compensation=False, arm_command=False):
+                 compensation=False, arm_command=False, record_body=False):
         """创建 SDK 反馈订阅；require_urs 仅供后续执行监视，超时单位为秒。
 
         diagnostics 需提供 record(event, **fields)。compensation启用骨盆IMU及腰反馈订阅。
         arm_command启用MC的HAL手臂命令只读订阅，供规划起点及衔接观测使用。
+        record_body在关闭补偿时仅记录IMU与腰原始消息，不参与采样就绪或运动校验。
         模式确认服务及运动发布不在本类中。
         """
         from aimdk_msgs.msg import JointStateArray, HandStateArray, McCommonState
@@ -34,6 +35,8 @@ class UpperBodyFeedbackPort:
 
         self.node, self.diagnostics = node, diagnostics
         self.lock = threading.RLock()
+        self.observation_serials = ({'pelvis_imu': 0, 'waist': 0}
+                                    if record_body and not compensation else {})
         self.streams = dict(arm=Stream('arm', decode_arm), hand=Stream('hand', decode_hand),
                             mc=Stream('mc', decode_urs_mc if require_urs else decode_observed_mode))
         if arm_command:
@@ -57,7 +60,7 @@ class UpperBodyFeedbackPort:
                 from aimdk_msgs.msg import JointCommandArray
 
                 topics.append(('arm_command', JointCommandArray, '/aima/hal/joint/arm/command'))
-            if compensation:
+            if compensation or record_body:
                 from sensor_msgs.msg import Imu
 
                 topics.extend([('pelvis_imu', Imu, '/aima/hal/imu/torso/state'),
@@ -82,6 +85,14 @@ class UpperBodyFeedbackPort:
         from rosidl_runtime_py.convert import message_to_ordereddict
 
         now = time.monotonic()
+        if name in self.observation_serials:
+            self.observation_serials[name] += 1
+            self.diagnostics.record(
+                'feedback', stream=name, received_monotonic_s=now,
+                ros_time_s=self.node.get_clock().now().nanoseconds / 1e9,
+                raw=message_to_ordereddict(msg), serial=self.observation_serials[name],
+                observation_only=True, error=None)
+            return
         stream = self.streams[name]
         stream.accept(msg, now)
         self.diagnostics.record('feedback', stream=name, received_monotonic_s=now,

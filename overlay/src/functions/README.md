@@ -512,6 +512,51 @@ ros2 run aimdk_functions upper_body_teleop_stats "${TELEOP_IK_LOGS[0]}"
 统计增加`execution`及发布耗时分布；`accepted_inputs_not_published`列出50Hz采样未发送的IK输入，
 `unknown_published_inputs`正常应为空。当前只完成本地静态检查，容器执行及实体跟随待验证。
 
+### 跟随误差实验日志与离线分析
+
+现场入口增加`--record-body`，独立于补偿开关记录骨盆IMU及腰原始消息。
+`--no-compensation --record-body`下两路消息带`observation_only=true`，保留原始字段、接收时间及逐流serial；
+它们不参与采样就绪、反馈时限和错误中止。未收到消息时没有对应记录，分析报告将计数列为0。
+开启补偿时仍使用既有必需IMU／腰反馈及校验，记录选项不改变其约束。
+
+遥操`command_published`新增：
+
+| 字段 | 定义 |
+| --- | --- |
+| `arm_feedback_serial` | 本次实际使用的arm反馈序号，对应同日志`feedback.stream=arm`的serial |
+| `arm_feedback_stamp_s` | 该反馈的原始源时间，秒 |
+| `arm_feedback_received_monotonic_s` | 该反馈的本机单调接收时间，秒 |
+| `publish_begin_monotonic_s`／`publish_end_monotonic_s` | `publisher.publish()`调用前后的本机单调时间；不是机器人内部执行时刻 |
+
+`upper_body_teleop_analyze`只读日志，不导入ROS或调用SDK。核对日志URDF摘要并加载日志中的完整工具变换，
+输出分侧CSV、`summary.json`与解释报告，可选输出PNG。运行示例：
+
+```bash
+# 机器人容器构建安装后运行；也可使用下方本地入口。
+ros2 run aimdk_functions upper_body_teleop_analyze /实际路径/执行日志.jsonl \
+  --side both --start 5 --end 25 --output /新的分析目录
+
+# 本地项目根目录：只需NumPy；--plots另需matplotlib。
+PYTHONPATH=overlay/src/functions python3 -m aimdk_functions.upper_body_teleop_analyze \
+  /实际路径/执行日志.jsonl --side right --output exports/跟随误差_会话1 --plots
+```
+
+窗口相对首条发布调用开始时间，历史日志缺该字段时用首条发布日志记录时间。
+输出含每轴发送目标误差、理想目标误差和实际偏置，单位度；原始关节rad；
+名义TCP的IK、补偿几何变化、反馈跟踪三项位置分解与任务误差，单位mm。
+统计按发布计数，同时报告唯一arm反馈数、复用数及缺少反馈标识的条数。
+`startup`为首次零增量发送，`ramp`为该侧补偿渐入，`holding`为已接受目标中该侧Grip释放，
+其余为`tracking`；`holding`仅定义目标保持，不证明实体稳定。分析静态末5秒时显式指定窗口。
+
+新日志可用`--delay-max 秒数`开启命令历史的非负表观延迟与常值偏差拟合。
+搜索上界从停走响应确定，步长默认2ms；前2/3独立反馈拟合，后1/3验证。
+按反馈serial去重并使用单调接收时间，命令采用零阶保持；只使用全部候选延迟共同有效的样本，
+命令间隔上限默认80ms。报告零延迟与对齐后的误差、验证残差和搜索边界标记。
+示例中确定上界后，在上述命令添加`--delay-max 实测上界秒数`；该估计包含传输、采样与机器人响应。
+历史日志仍可计算误差分解；缺少明确发布时刻或反馈关联时，延迟结果为`unavailable`。
+输出目录必须新建，避免覆盖已有实验结果。全部指标按名义模型解释，实体精度及世界系误差需要独立测量。
+完整操作与判别见[误差实验方案](../../../docs/teleop_tracking_error_experiments.md)。
+
 ### 映射检查与原节奏回放
 
 回放和现场只读入口均支持`--display-interval 秒数`，默认1，0关闭终端映射输出。

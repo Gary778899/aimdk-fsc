@@ -32,7 +32,8 @@ class OnlineExecutionTests(unittest.TestCase):
         self.port.options, self.port.diagnostics = self.options, self.log
         self.port.captured, self.port.node = self.target, Mock()
         self.port.feedback = Mock()
-        self.port.feedback.checked.return_value = dict(arm=SimpleNamespace(positions=self.target.arm_rad))
+        self.port.feedback.checked.return_value = dict(arm=SimpleNamespace(
+            positions=self.target.arm_rad, serial=7, stamp=99.97, received=99.98))
         self.port.publisher, self.port.timer = Mock(), Mock()
         self.port.sequence, self.port.last_publish = 0, None
         self.port.last_sent = None
@@ -57,7 +58,8 @@ class OnlineExecutionTests(unittest.TestCase):
         """实际位置偏差超过5度仍发送，日志区分新目标和此前成功发送目标，首帧无前目标。"""
         actual = list(self.target.arm_rad)
         actual[10] += .12
-        self.port.feedback.checked.return_value = dict(arm=SimpleNamespace(positions=tuple(actual)))
+        self.port.feedback.checked.return_value = dict(arm=SimpleNamespace(
+            positions=tuple(actual), serial=8, stamp=99.97, received=99.98))
         with patch('aimdk_functions.upper_body_teleop_execution.time.monotonic', return_value=100.), \
                 patch('aimdk_functions.upper_body_teleop_execution.build_upper_body_command', side_effect=message):
             self.port.begin_online(self.store, self.frame)
@@ -84,6 +86,21 @@ class OnlineExecutionTests(unittest.TestCase):
         self.assertEqual(self.port.publisher.publish.call_count, 2)
         self.assertFalse(self.port.stopped)
         self.assertIsNone(self.port.background_error)
+
+    def test_publish_records_selected_feedback_and_call_interval(self):
+        """发布日志关联本次使用的反馈快照，并保留发布调用的开始和结束时刻。"""
+        with patch('aimdk_functions.upper_body_teleop_execution.time.monotonic',
+                   side_effect=[100., 100., 100.001, 100.003]), \
+                patch('aimdk_functions.upper_body_teleop_execution.build_upper_body_command',
+                      side_effect=message):
+            self.port.begin_online(self.store, self.frame)
+        row = [call.kwargs for call in self.log.record.call_args_list
+               if call.args[0] == 'command_published'][-1]
+        self.assertEqual(row['arm_feedback_serial'], 7)
+        self.assertEqual(row['arm_feedback_stamp_s'], 99.97)
+        self.assertEqual(row['arm_feedback_received_monotonic_s'], 99.98)
+        self.assertEqual(row['publish_begin_monotonic_s'], 100.001)
+        self.assertEqual(row['publish_end_monotonic_s'], 100.003)
 
     def test_feedback_failure_still_stops_publishing(self):
         """跟踪仅观测后，反馈故障仍阻止发送并锁存异常。"""

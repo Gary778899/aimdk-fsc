@@ -50,6 +50,8 @@ def parser():
                         help='执行默认开启位置偏置补偿，--no-compensation关闭')
     result.add_argument('--compensation-duration', type=float, default=5.,
                         help='每侧首次接管后补偿从零引入的秒数，默认5，Grip重按不重置')
+    result.add_argument('--record-body', action='store_true',
+                        help='独立记录骨盆IMU与腰原始反馈；关闭补偿时不作为运动门槛')
     result.set_defaults(arm_start_source='mc-command')
     return result
 
