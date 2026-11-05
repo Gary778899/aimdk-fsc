@@ -188,30 +188,170 @@ JSONL的`monotonic_s`晚于publish，三者不能互换，也不代表机器人�
 静态优先右臂三个姿态各三次；明确主因后左臂复测，最后双臂复测。
 每次会话记录实验编号、姿态、实际工具、补偿状态、目标幅度、实际持续时间与现场操作。
 
-沿用已手动进入URS/RUNNING、Service运行及PICO持续发送的环境，在机器人容器运行：
+### 9.1 公共准备：机器人容器与本地终端
+
+用户同步代码后，在机器人Humble容器的同一Bash终端执行：
 
 ```bash
-ros2 run aimdk_functions upper_body_teleop_observe \
-  --device-id TestDevice \
-  --input-config /home/agi/aimdk-fsc/src/remote_control/config/input.json \
-  --mapping-config /home/agi/aimdk-fsc/src/remote_control/config/mapping.json \
-  --sdk-library /opt/apps/roboticsservice/SDK/arm64/libPXREARobotSDK.so \
-  --xr-output /home/agi/aimdk-fsc/log/tracking_C_right_pose1_rep1/xr.jsonl \
-  --log-dir /home/agi/aimdk-fsc/log/tracking_C_right_pose1_rep1 \
-  --timeout 10 --input-timeout 0.5 --duration 60 --display-interval 1 \
-  --load-description 'C，右臂姿态1，重复1；填写实际工具与开度，不持物' \
-  --record-body --no-compensation --execute
+cd /home/agi/aimdk-fsc
+bash scripts/build_overlay.sh remote_control aimdk_functions
+source /home/agi/aimdk/install/setup.bash
+source /home/agi/aimdk-fsc/install/local_setup.bash
+ros2 run aimdk_functions upper_body_teleop_observe --help
+
+TRACKING_ARGS=(
+  --device-id TestDevice
+  --input-config /home/agi/aimdk-fsc/src/remote_control/config/input.json
+  --mapping-config /home/agi/aimdk-fsc/src/remote_control/config/mapping.json
+  --sdk-library /opt/apps/roboticsservice/SDK/arm64/libPXREARobotSDK.so
+  --timeout 10 --input-timeout 0.5 --duration 60 --display-interval 1
+  --record-body
+)
 ```
 
-补偿组使用独立实验目录，将`--no-compensation`替换为`--compensation`；保持其他配置与现场条件可比。
-握持Grip到达姿态后松开，保持PICO发送；以日志确认目标保持段和分析窗口。
+启动采集前由操作者进入URS/RUNNING、启动Service，在PICO开启Head／Controller tracking和Send。
+`TRACKING_ARGS`供下文B、C、D复用；每次采集使用新时间戳目录。
+命令不选择运动侧，案例名中的left／right仅标记实验：单侧实验只操作该侧Grip，另一侧保持释放。
+`--duration 60`从输入接收线程启动起计时，包含首次Grip前等待；等待过久、未形成完整保持窗口时重新采集该轮。
+
+日志下载使用现有“机器人：下载日志”任务。下文离线命令在本地项目根目录的另一个Bash终端执行：
+
+```bash
+cd /home/gary/projects/aimdk-fsc
+export PYTHONPATH="$PWD/overlay/src/functions${PYTHONPATH:+:$PYTHONPATH}"
+TRACKING_ANALYSIS_ROOT="exports/tracking_$(date +%Y%m%d_%H%M%S)"
+python3 -m aimdk_functions.upper_body_teleop_analyze --help
+```
+
+基本分析只依赖NumPy；命令添加`--plots`后输出PNG，需要本地matplotlib。
+每组输出目录必须新建，重复分析时重新设置`TRACKING_ANALYSIS_ROOT`或更换输出后缀。
+
+### 9.2 实验A：已有日志离线分解
+
+本地执行，无需启动机器人或PICO：
+
+```bash
+TRACKING_LOG="log/teleop_no_comp_20261103_205907/upper_body_1793711187927434632_50724dcb.jsonl"
+python3 -m aimdk_functions.upper_body_teleop_analyze "$TRACKING_LOG" \
+  --side both --output "$TRACKING_ANALYSIS_ROOT/A_full" --plots
+python3 -m aimdk_functions.upper_body_teleop_analyze "$TRACKING_LOG" \
+  --side right --start 5 \
+  --output "$TRACKING_ANALYSIS_ROOT/A_right_after5s" --plots
+```
+
+核对`summary.json`的metadata、退出原因、IK残差、`task_mm_norm`与`tracking_mm_norm`；
+再用CSV中的三项有符号位置分解与`bias_deg`、`send_error_deg`、`ideal_error_deg`解释误差。
+第二条命令只截取首条发布5秒后的记录，不自动判定静态或补偿完成；阶段结果另看`phases`。
+此历史日志缺新增时间关联，不运行延迟拟合。
+
+### 9.3 实验C：无补偿静态保持
+
+每个姿态与重复轮次单独启动一次。机器人容器执行，依次填写案例名与实际工具说明：
+
+```bash
+TRACKING_CASE="C_right_pose1_rep1"
+TRACKING_RUN_DIR="/home/agi/aimdk-fsc/log/tracking_${TRACKING_CASE}_$(date +%Y%m%d_%H%M%S)"
+read -r -p '实际工具、固定夹爪开度及负载说明：' TRACKING_LOAD
+ros2 run aimdk_functions upper_body_teleop_observe "${TRACKING_ARGS[@]}" \
+  --xr-output "$TRACKING_RUN_DIR/xr.jsonl" --log-dir "$TRACKING_RUN_DIR" \
+  --load-description "$TRACKING_CASE；$TRACKING_LOAD" \
+  --no-compensation --execute
+```
+
+按第6节到达指定姿态后松开Grip，保持PICO发送至少10秒；保持完成后可Ctrl-C收尾，退出原因应为`interrupted`。
+记录到达方向与保持起止时刻。三姿态分别使用`pose1`自然屈肘、`pose2`向前伸出、`pose3`侧向展开，
+每个姿态更换`rep1`／`rep2`／`rep3`重跑上段；左侧复测时更换案例名并仅操作左Grip。
+
+下载后，本地填写该轮目录，先分析全程，再依据CSV确定静态末5秒的真实起止时刻：
+
+```bash
+read -r -p '本轮本地会话目录（log/tracking_C_...，末尾不加斜杠）：' TRACKING_LOCAL_DIR
+TRACKING_LOGS=("$TRACKING_LOCAL_DIR"/upper_body_*.jsonl)
+TRACKING_LOG="${TRACKING_LOGS[0]}"
+python3 -m aimdk_functions.upper_body_teleop_analyze "$TRACKING_LOG" \
+  --side right --output "$TRACKING_ANALYSIS_ROOT/${TRACKING_LOCAL_DIR##*/}_full" --plots
+
+read -r -p '静态末5秒窗口起点（相对首条发布，秒）：' TRACKING_START
+read -r -p '静态窗口终点（秒）：' TRACKING_END
+python3 -m aimdk_functions.upper_body_teleop_analyze "$TRACKING_LOG" \
+  --side right --start "$TRACKING_START" --end "$TRACKING_END" \
+  --output "$TRACKING_ANALYSIS_ROOT/${TRACKING_LOCAL_DIR##*/}_static" --plots
+```
+
+新采集目录每轮只有一个`upper_body_*.jsonl`；分析前核对数组所选路径与采集终端显示的日志一致。
+窗口必须位于松开Grip后的连续保持段；左侧复测将两条命令的`--side right`改为`left`。
+核对`feedback_counts`中的IMU／腰计数，静态窗口内`ideal_rad`不变，并查看反馈误差是否仍有趋势。
+
+### 9.4 实验D：补偿开关配对
+
+关闭补偿组使用实验C的数据。为每个姿态再采集对应开启组，机器人容器执行：
+
+```bash
+TRACKING_CASE="D_right_pose1_rep1_on"
+TRACKING_RUN_DIR="/home/agi/aimdk-fsc/log/tracking_${TRACKING_CASE}_$(date +%Y%m%d_%H%M%S)"
+read -r -p '与配对关闭组一致的工具、开度及负载说明：' TRACKING_LOAD
+ros2 run aimdk_functions upper_body_teleop_observe "${TRACKING_ARGS[@]}" \
+  --xr-output "$TRACKING_RUN_DIR/xr.jsonl" --log-dir "$TRACKING_RUN_DIR" \
+  --load-description "$TRACKING_CASE；$TRACKING_LOAD" \
+  --compensation --compensation-duration 5 --execute
+```
+
+按第7节交替采集关／开条件；本轮对应`C_right_pose1_rep1`，其余姿态、重复和侧别使用相同编号。
+到达姿态后松开Grip继续发送；保持窗口需在该侧`blend=1`之后，并具备完整10秒保持。
+下载后复用9.3的本地命令，填写本轮D目录与本轮窗口，分别生成`_full`和`_static`结果。
+比较配对报告的`ideal_rad.mean`与CSV中的理想目标，再比较`ideal_error_deg`和`task_mm_norm`。
+同时核对`bias_deg`、`saturated_publish_samples`与`blend`；目标不匹配时按探索性对照记录。
+目前没有相同绝对理想目标的执行重放命令，严格配对入口仍待实现。
+
+### 9.5 实验B：停走、反向与动态滞后
+
+机器人容器执行，先右侧X方向慢速组：
+
+```bash
+TRACKING_CASE="B_right_x_slow_rep1"
+TRACKING_RUN_DIR="/home/agi/aimdk-fsc/log/tracking_${TRACKING_CASE}_$(date +%Y%m%d_%H%M%S)"
+read -r -p '实际工具、固定夹爪开度、路径幅度及负载说明：' TRACKING_LOAD
+ros2 run aimdk_functions upper_body_teleop_observe "${TRACKING_ARGS[@]}" \
+  --xr-output "$TRACKING_RUN_DIR/xr.jsonl" --log-dir "$TRACKING_RUN_DIR" \
+  --load-description "$TRACKING_CASE；$TRACKING_LOAD" \
+  --no-compensation --execute
+```
+
+按第5节执行保持、正向移动、松开保持、重按反向移动、松开保持。更换`x`为`y`／`z`，
+更换`slow`为`fast`记录较快组；实际幅度和速度以日志为准。动作结束后保留保持段再退出。
+此处`x/y/z`为期望机器人B系运动方向，第一轮保持工具姿态，案例名不向程序施加轴约束。
+
+下载后，本地先生成无延迟分析结果，查看发送目标与反馈曲线，确定含正反向运动的窗口及延迟搜索上界：
+
+```bash
+read -r -p '本轮本地会话目录（log/tracking_B_...）：' TRACKING_LOCAL_DIR
+TRACKING_LOGS=("$TRACKING_LOCAL_DIR"/upper_body_*.jsonl)
+TRACKING_LOG="${TRACKING_LOGS[0]}"
+python3 -m aimdk_functions.upper_body_teleop_analyze "$TRACKING_LOG" \
+  --side right --output "$TRACKING_ANALYSIS_ROOT/${TRACKING_LOCAL_DIR##*/}_full" --plots
+
+read -r -p '拟合窗口起点（相对首条发布，秒）：' TRACKING_START
+read -r -p '拟合窗口终点（秒）：' TRACKING_END
+read -r -p '根据停走响应选定的非负延迟搜索上界（秒，须大于0）：' TRACKING_DELAY_MAX
+python3 -m aimdk_functions.upper_body_teleop_analyze "$TRACKING_LOG" \
+  --side right --start "$TRACKING_START" --end "$TRACKING_END" \
+  --delay-max "$TRACKING_DELAY_MAX" --delay-step 0.002 \
+  --output "$TRACKING_ANALYSIS_ROOT/${TRACKING_LOCAL_DIR##*/}_delay" --plots
+```
+
+查看`summary.json`中的`sides.right.delay`：`status`、`delay_s`、`at_search_boundary`、
+`zero_delay_validation_demeaned_rmse_deg`与`validation_demeaned_rmse_deg`。
+搜索结果在上边界时复核所选窗口和上界依据；`unavailable`时按reason检查新日志字段、独立反馈数与命令缺口。
+拟合和验证分别使用窗口前2/3与后1/3，选窗时让两个部分均覆盖运动；慢／快组独立分析，不能直接以人工动作差异判断算法收益。
+
+### 9.6 实验E与结果交付
+
+实验E尚无外部测量条件及采集适配，不提供当前不能执行的测量命令。已有B、C、D的IMU／腰记录仅供身体变化相关性分析。
 `upper_body_control joint`可辅助重构回归，但其±5°跟踪／到位检查可能提前终止，且TCP入口使用腕原点，
 不能直接代替本实验的持续遥操保持记录。既有保护与模式行为保持原契约。
 
-离线入口为`upper_body_teleop_analyze`，支持日志路径、侧别、相对首条发布的起止窗口、阶段统计与可选PNG。
-详细字段和调用方法见[实验日志与分析说明](../overlay/src/functions/README.md#跟随误差实验日志与离线分析)。
-本地可使用`PYTHONPATH=overlay/src/functions python3 -m aimdk_functions.upper_body_teleop_analyze`。
-延迟拟合须显式提供`--delay-max`，并要求新日志的发送时间及反馈关联；历史日志仅做误差分解。
+每轮`upper_body_*.jsonl`与`xr.jsonl`保留在对应log目录；分析输出包含`summary.json`、`report.md`、
+分侧CSV和启用绘图时的PNG。字段定义见[实验日志与分析说明](../overlay/src/functions/README.md#跟随误差实验日志与离线分析)。
 
 分析结果放入`exports/`，每份报告包含源日志摘要、模型／工具摘要、开关及窗口、原始和延迟对齐后指标、
 分轴曲线、配对姿态差、支持的解释与仍不能区分的因素。
