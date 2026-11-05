@@ -112,8 +112,9 @@ class OnlineCoreTest(unittest.TestCase):
         self.assertEqual(self.arms['right'].calls, 0)
 
     def test_range_and_coordinate_frame_rejected(self):
-        """拒绝会话10度以外目标和未转换到torso_link的目标。"""
-        for frame in (self.frame(1, .2, .01), self.frame(1, base_frame='world')):
+        """拒绝模型关节限位以外目标和未转换到torso_link的目标。"""
+        outside = EXECUTION_LIMITS_RAD[0][1] - self.captured.arm_rad[0] + .01
+        for frame in (self.frame(1, outside, .01), self.frame(1, base_frame='world')):
             with self.assertRaises(OnlineIKFailure):
                 self.solver.propose(frame)
         self.assertEqual(self.solver.accepted, self.captured)
@@ -125,6 +126,16 @@ class OnlineCoreTest(unittest.TestCase):
         self.assertEqual(value.target, self.captured)
         self.assertEqual(sum(arm.calls for arm in self.arms.values()), 0)
         self.assertIs(self.solver.store.get(), value)
+
+    def test_changes_above_ten_degrees_are_observed_without_rejection(self):
+        """模型限位内大于10°的变化可提交，仍记录相邻及累计变化。"""
+        candidate = self.solver.propose(self.frame(1, .2, .2))
+        for row in candidate.report['arms'].values():
+            self.assertTrue(row['exceeds_10deg_observation'])
+            self.assertAlmostEqual(row['step_rad'], .2)
+            self.assertAlmostEqual(row['excursion_rad'], .2)
+        self.solver.commit(candidate)
+        self.assertEqual(self.solver.last_input_seq, 1)
 
     def teleop_step(self, seq, command_delta, grips=(1., 0.), x=0.):
         """使用不同于实际反馈的HAL命令回放一帧，返回该帧采样的完整命令。"""
@@ -161,7 +172,38 @@ class OnlineCoreTest(unittest.TestCase):
         self.assertEqual(self.solver.origin.arm_rad[:7], command[:7])
         self.assertEqual(self.solver.states['left'].sew, command[0])
         self.assertEqual(self.solver.command_reference_sides, {'left'})
+        self.assertEqual(self.solver.store.get().compensation_sides, ('left',))
         self.assertEqual(self.arms['left'].calls, 0)
+
+    def test_superseded_candidate_keeps_target_until_release_and_regrip(self):
+        """普通求解被Grip边沿取代时不提交，松开和重按仍建立正确参考。"""
+        self.teleop_step(1, .02)
+        original = self.solver.accepted
+        pose = Pose((.1, 0., 0.), np.eye(3))
+        pressed = Controller(pose, 1., 0., tracking_valid=True)
+        released = Controller(pose, 0., 0., tracking_valid=True)
+        frames = [XRFrame(2, 2000, 2., pressed, released),
+                  XRFrame(3, 3000, 3., released, released),
+                  XRFrame(4, 4000, 4., pressed, released)]
+        decisions = iter((False, True, True))
+
+        def before_commit():
+            """模拟第一普通候选求解期间收到松开，后续边沿允许提交。"""
+            return next(decisions)
+
+        def hold_motion(value):
+            """松开及重按仅提交保持／参考状态。"""
+            return value.seq != 2
+
+        diagnostics = Mock()
+        count = replay_frames(frames, self.session, self.solver, diagnostics,
+                              before_commit=before_commit, hold_motion=hold_motion)
+        self.assertEqual(count, 2)
+        self.assertEqual(self.solver.accepted, original)
+        self.assertEqual(self.solver.last_input_seq, 4)
+        self.assertEqual(self.session.describe()['sides']['left']['controller_reference'], pose.to_dict())
+        superseded = [call for call in diagnostics.record.call_args_list if call.args[0] == 'ik_superseded']
+        self.assertEqual(superseded[0].kwargs['input_seq'], 2)
 
     def test_regrip_uses_ideal_and_later_first_grip_is_independent(self):
         """左臂重按忽略新的HAL偏置，右臂首次按下独立取新命令且不重置左臂范围。"""
@@ -174,6 +216,7 @@ class OnlineCoreTest(unittest.TestCase):
         self.assertEqual(self.solver.origin.arm_rad[:7], command[:7])
         self.assertEqual(self.solver.accepted.arm_rad[7:], new_command[7:])
         self.assertEqual(self.solver.command_reference_sides, {'left', 'right'})
+        self.assertEqual(self.solver.store.get().compensation_sides, ('left', 'right'))
 
     def test_failed_first_grip_does_not_commit_reference(self):
         """右臂失败时，左臂首次命令参考、范围起点及已接管标记均不生效。"""
@@ -198,6 +241,34 @@ class OnlineCoreTest(unittest.TestCase):
         command = self.teleop_step(3, .06, grips=(1., 1.))
         self.assertEqual(self.solver.accepted.arm_rad, command)
         self.assertEqual(self.solver.origin.arm_rad, command)
+
+    def test_failure_log_preserves_previous_frame_and_candidate(self):
+        """回放首个越限失败保存候选及前后参考，并停止消费后续输入。"""
+        config = MappingConfig.from_dict(dict(
+            basis=np.eye(3), translation_scale=1., rotation_mode='relative',
+            grip_threshold=.5, gripper_mode='hold', trigger_openings=None,
+            unknown_tracking='reject', base_frame='torso_link'))
+        frames = []
+        outside = EXECUTION_LIMITS_RAD[0][1] - self.captured.arm_rad[0] + .01
+        for seq, x in enumerate((0., outside, outside+.01), 1):
+            hand = Controller(Pose((x, 0., 0.), np.eye(3)), 1., 0., tracking_valid=True)
+            frames.append(XRFrame(seq, seq*1000, float(seq), hand, hand))
+        diagnostics = Mock()
+        with self.assertRaises(OnlineIKFailure):
+            replay_frames(frames, Session(config), self.solver, diagnostics)
+        failures = [call.kwargs for call in diagnostics.record.call_args_list
+                    if call.args[0] == 'ik_rejected']
+        self.assertEqual(len(failures), 1)
+        failure = failures[0]
+        self.assertEqual(failure['input_seq'], 2)
+        self.assertEqual(failure['previous_accepted']['input_frame']['seq'], 1)
+        self.assertEqual(failure['ik_before'], failure['ik_after'])
+        self.assertEqual(failure['mapping_before']['sides'], failure['mapping_after']['sides'])
+        self.assertGreater(failure['result']['arms']['left']['step_rad'], .17)
+        self.assertIn('candidate_rad', failure['result']['arms']['left'])
+        inputs = [call.kwargs['frame']['seq'] for call in diagnostics.record.call_args_list
+                  if call.args[0] == 'xr_input']
+        self.assertEqual(inputs, [1, 2])
 
 
 if __name__ == '__main__':

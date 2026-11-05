@@ -59,6 +59,7 @@ class AcceptedTarget:
     target: CapturedTarget
     input_seq: object
     accepted_monotonic_s: float
+    compensation_sides: tuple = ()
 
 
 class OnlineTargetStore:
@@ -69,9 +70,9 @@ class OnlineTargetStore:
         self._lock = threading.Lock()
         self._value = AcceptedTarget(initial, None, time.monotonic())
 
-    def put(self, target, input_seq):
-        """原子替换完整目标，返回带接受时间的快照；不重写输入源时间。"""
-        value = AcceptedTarget(target, input_seq, time.monotonic())
+    def put(self, target, input_seq, compensation_sides=()):
+        """原子替换目标及已接管侧，返回带接受时间的快照；不重写输入源时间。"""
+        value = AcceptedTarget(target, input_seq, time.monotonic(), tuple(compensation_sides))
         with self._lock:
             self._value = value
         return value
@@ -89,7 +90,7 @@ class DualArmOnlineIK:
         """使用完整关节起点captured和gripper模型初始化理想状态，非法输入抛出异常。
 
         arms可注入同侧ArmKinematics用于离线验证；默认加载包内左右gripper模型。
-        首次Grip可事务式更新所选侧命令参考；之后10°实验范围不随Grip重按扩大。
+        首次Grip可事务式更新所选侧命令参考；之后累计变化参考不随Grip重按扩大。
         """
         if not isinstance(captured, CapturedTarget):
             raise ControlFailure('在线IK起点须为CapturedTarget')
@@ -130,20 +131,22 @@ class DualArmOnlineIK:
                     model_path=str(model_path()), model_sha256=MODEL_SHA256,
                     origin_arm_rad=list(self.origin.arm_rad),
                     origin_hand_openings=list(self.origin.hand_openings),
-                    joint_delta_limit_rad=MAX_JOINT_DELTA_RAD,
-                    clamp_reach=False, fallback=False, compensation_enabled=False)
+                    joint_delta_observation_rad=MAX_JOINT_DELTA_RAD,
+                    joint_delta_limit_rad=None,
+                    clamp_reach=False, fallback=False, compensation_in_ik=False)
 
     def propose(self, frame, *, reference=None, rebase_sides=()):
         """为TargetFrame求完整候选；无解、越限或分支改变抛出OnlineIKFailure。
 
-        每侧残差只记录；沿用10°相邻及相对实例起点范围。调用不改变已接受目标、
+        每侧残差、相邻及相对实例起点变化只记录。调用不改变已接受目标、
         种子、SEW、分支、revision或目标存储；未使能侧保持上一已接受目标。
         reference为首次接管的新鲜HAL命令；rebase_sides指定首次接管的侧，同时重建
-        这些侧的种子、SEW及10°范围起点，候选提交前不生效。
+        这些侧的种子、SEW及累计变化参考，候选提交前不生效。
         """
         began = time.monotonic()
         report = dict(status='rejected', arms={}, started_monotonic_s=began,
                       previous_input_seq=self.last_input_seq)
+        row = None
         try:
             if not isinstance(frame, TargetFrame):
                 raise ControlFailure('在线IK输入须为TargetFrame')
@@ -198,16 +201,18 @@ class DualArmOnlineIK:
                     sew = float(solution.psi)
                     branch = (int(solution.elbow_branch), int(solution.shoulder_branch),
                               int(solution.wrist_branch))
+                    row.update(candidate_rad=list(joints), sew_rad=sew, branch=branch)
                     if previous.branch is not None and branch != previous.branch:
                         raise ControlFailure(f'{side}解析分支改变')
                 if not math.isfinite(sew):
                     raise ControlFailure(f'{side}候选SEW非有限')
-                candidate_target = candidate_target.for_arm(side, joints)
                 origin_joints = origin.arm_rad[index * 7:index * 7 + 7]
                 step = max(abs(a - b) for a, b in zip(joints, previous.joints))
                 excursion = max(abs(a - b) for a, b in zip(joints, origin_joints))
-                if max(step, excursion) > MAX_JOINT_DELTA_RAD:
-                    raise ControlFailure(f'{side}相邻或会话总变化超过既有10°范围')
+                row.update(candidate_rad=list(joints), sew_rad=sew, branch=branch,
+                           step_rad=step, excursion_rad=excursion)
+                candidate_target = candidate_target.for_arm(side, joints)
+                row['exceeds_10deg_observation'] = max(step, excursion) > MAX_JOINT_DELTA_RAD
                 actual, actual_rotation = arm.forward(joints)
                 residual = float(np.linalg.norm(actual - desired_position))
                 angular = float(np.linalg.norm(log3(desired_rotation @ actual_rotation.T)))
@@ -224,6 +229,9 @@ class DualArmOnlineIK:
                           calculation_seconds=time.monotonic() - began)
             return IKProposal(self, self.revision, frame.input_seq, candidate_target, tuple(states), report, origin)
         except Exception as error:
+            if row is not None and row.get('status') != 'accepted':
+                row.update(status='rejected', solve_seconds=time.monotonic()-start,
+                           reason=str(error))
             report.update(reason=str(error), calculation_seconds=time.monotonic() - began,
                           last_accepted_rad=list(self.accepted.arm_rad))
             raise OnlineIKFailure(str(error), report) from error
@@ -242,4 +250,4 @@ class DualArmOnlineIK:
         self.states = dict(zip(SIDES, proposal.states))
         self.last_input_seq = proposal.input_seq
         self.revision += 1
-        return self.store.put(proposal.target, proposal.input_seq)
+        return self.store.put(proposal.target, proposal.input_seq, sorted(self.command_reference_sides))

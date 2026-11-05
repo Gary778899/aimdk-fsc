@@ -1,6 +1,7 @@
 """包内只读反馈适配与完整命令组装；运动发布状态机由统一执行器管理。"""
 
 from functools import partial
+import threading
 import time
 
 from .dual_arm_control_core import (
@@ -32,6 +33,7 @@ class UpperBodyFeedbackPort:
         from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 
         self.node, self.diagnostics = node, diagnostics
+        self.lock = threading.RLock()
         self.streams = dict(arm=Stream('arm', decode_arm), hand=Stream('hand', decode_hand),
                             mc=Stream('mc', decode_urs_mc if require_urs else decode_observed_mode))
         if arm_command:
@@ -72,6 +74,11 @@ class UpperBodyFeedbackPort:
 
     def receive(self, name, msg):
         """记录完整原始字段及接收时间，复用首次错误锁存；解码失败仍先记录原始消息。"""
+        with self.lock:
+            self._receive(name, msg)
+
+    def _receive(self, name, msg):
+        """在反馈锁内完成一次解码及原始记录，供ROS线程与IK快照读取共用。"""
         from rosidl_runtime_py.convert import message_to_ordereddict
 
         now = time.monotonic()
@@ -86,9 +93,10 @@ class UpperBodyFeedbackPort:
 
     def checked(self):
         """返回各路新鲜且源时间推进的样本；任何锁存错误或时钟异常向上传播。"""
-        now = time.monotonic()
-        ros_now = self.node.get_clock().now().nanoseconds / 1e9
-        return {name: stream.checked(now, ros_now) for name, stream in self.streams.items()}
+        with self.lock:
+            now = time.monotonic()
+            ros_now = self.node.get_clock().now().nanoseconds / 1e9
+            return {name: stream.checked(now, ros_now) for name, stream in self.streams.items()}
 
     def close(self):
         """销毁本适配器创建的订阅；不改变机器人模式或发送任何运动消息。"""

@@ -1,8 +1,9 @@
-"""实际反馈与PICO输入的持续只读双臂IK观测；不创建运动发布器。"""
+"""PICO持续接收、20Hz最新位姿IK与Grip边沿；显式execute开启50Hz发布。"""
 
 import argparse
 from dataclasses import asdict
 import hashlib
+from itertools import chain
 import math
 import sys
 import time
@@ -15,30 +16,41 @@ from remote_control.sdk import SDKSource
 
 from .dual_arm_control_core import ARM_NAMES
 from .upper_body_cartesian_core import CapturedTarget
+from .upper_body_control_core import ArmCompensationGroup
 from .upper_body_diagnostics import UpperBodyLog, code_manifest, log_directory
 from .upper_body_execution import UpperBodyExecutor
+from .upper_body_teleop_execution import UpperBodyTeleopExecutor
+from .upper_body_teleop_input import LatestInput
+from .upper_body_mode import confirm_initial_mode
 from .upper_body_kinematics.adapter import ArmKinematics
 from .upper_body_online_core import DualArmOnlineIK
 from .upper_body_teleop_replay import replay_frames
+from .upper_body_teleop_tools import MappingDisplay, live_result_timing
 
 
 def parser():
-    """定义实际输入及只读观测参数；输入时限必须由操作者显式指定。"""
+    """定义实际输入及只读观测参数；默认等待新输入，时限仅供显式观测实验。"""
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument('--input-config', required=True, help='安装版本的输入协议JSON')
     result.add_argument('--mapping-config', required=True, help='坐标、Grip与夹爪映射JSON')
     result.add_argument('--device-id', required=True, help='所选头显设备标识')
     result.add_argument('--sdk-library', help='显式libPXREARobotSDK.so路径')
-    result.add_argument('--xr-output', required=True, help='新建原始XR及完整帧JSONL路径')
+    result.add_argument('--xr-output', required=True, help='原始XR及完整帧JSONL路径；重名时自动添加编号')
     result.add_argument('--log-dir', help='IK与反馈日志目录，默认工作区log')
     result.add_argument('--load-description', required=True, help='实际姿态、工具和负载说明')
-    result.add_argument('--input-timeout', type=float, required=True,
-                        help='显式接收／源时间停滞时限，单位秒；同样用于积压帧年龄检查')
+    result.add_argument('--input-timeout', type=float,
+                        help='输入时限秒数；只读默认不设，execute默认0.5，首次Grip前持续等待')
     result.add_argument('--feedback-timeout', type=float, default=.5, help='沿用反馈时限0.2..1秒')
-    result.add_argument('--timeout', type=float, default=5., help='初始反馈等待1..10秒')
-    result.add_argument('--duration', type=float, help='观测秒数，省略时持续至Ctrl-C')
-    result.add_argument('--execute', action='store_true', help='首轮只读，提供此参数立即拒绝')
-    result.set_defaults(compensation=False, arm_start_source='mc-command')
+    result.add_argument('--timeout', type=float, default=5., help='初始机器人反馈等待1..10秒')
+    result.add_argument('--duration', type=float, help='输入会话秒数，含等待Grip，省略时持续至Ctrl-C')
+    result.add_argument('--display-interval', type=float, default=1.,
+                        help='映射显示间隔秒数，默认1；Grip事件立即显示，0关闭显示')
+    result.add_argument('--execute', action='store_true', help='显式开启原生上肢持续执行，要求URS/RUNNING')
+    result.add_argument('--compensation', action=argparse.BooleanOptionalAction, default=True,
+                        help='执行默认开启位置偏置补偿，--no-compensation关闭')
+    result.add_argument('--compensation-duration', type=float, default=5.,
+                        help='每侧首次接管后补偿从零引入的秒数，默认5，Grip重按不重置')
+    result.set_defaults(arm_start_source='mc-command')
     return result
 
 
@@ -68,64 +80,47 @@ def command_reference(frame, values, solver, config, diagnostics):
     return solver.tcp_poses(reference), reference.hand_openings, command, rebase_sides
 
 
-def live_frames(source, recorder, port, options):
-    """处理ROS反馈并逐个消费SDK事件，返回新XR帧；失效或显式时限超出时抛出异常。
+def live_frames(receiver, port, options):
+    """持续处理ROS状态，立即交付Grip边沿，普通位姿按20Hz上限取最新完整帧。
 
-    输入源时间未知时仅检查接收时效；已知源时间保持原值并单独检查推进。
-    generator恢复时继续处理队列，IK期间的反馈时效由reference_provider复核。
+    接收及录制由独立线程推进；主线程等待时不重复消费缓存输入，不补算错过的周期。
     """
-    began = last_received = source_advanced = time.monotonic()
-    last_source = None
-    have_frame = False
-    while options.duration is None or time.monotonic() - began < options.duration:
-        port.rclpy.spin_once(port.node, timeout_sec=0.)
+    while True:
+        if options.execute:
+            port.check_background()
+        else:
+            port.rclpy.spin_once(port.node, timeout_sec=0.)
         if not port.rclpy.ok():
             raise InputUnavailable('ROS上下文停止')
         port.feedback.checked()
-        event = source.read(timeout=.001)
-        frame = None
-        if event is not None:
-            frame = recorder.consume(event, source.backlog)
-            if event.kind == 'server_disconnected' or (
-                    event.kind == 'device_missing' and event.device_id == options.device_id):
-                raise InputUnavailable(f'XR输入失效：{event.kind}')
-        # 同步日志写盘之后重新取时，区分回调间隔与排队／处理等待。
-        now = time.monotonic()
-        if frame is not None:
-            gap = frame.received_monotonic_s - last_received if have_frame else None
-            age = now - frame.received_monotonic_s
-            recorder.log.record('input_timing', input_seq=frame.seq,
-                                receive_gap_s=gap, processing_age_s=age)
-            if gap is not None and gap > options.input_timeout:
-                raise InputUnavailable('XR回调接收间隔超过显式input-timeout')
-            if age > options.input_timeout:
-                raise InputUnavailable('XR积压帧年龄超过显式input-timeout')
-            last_received = frame.received_monotonic_s
-            have_frame = True
-            if frame.source_time_ns is not None:
-                if last_source is not None and frame.source_time_ns < last_source:
-                    raise InputUnavailable('XR源时间回退')
-                if last_source is None or frame.source_time_ns > last_source:
-                    source_advanced = frame.received_monotonic_s
-                last_source = frame.source_time_ns
-        if now - last_received > options.input_timeout:
-            raise InputUnavailable('XR接收间隔超过显式input-timeout')
-        if last_source is not None and now - source_advanced > options.input_timeout:
-            raise InputUnavailable('XR源时间停滞超过显式input-timeout')
-        if frame is not None:
+        selected = receiver.take(time.monotonic())
+        if selected is not None:
+            frame = selected.frame
+            if options.execute:
+                port.observe_input(frame)
+            port.diagnostics.record('input_selected', input_seq=frame.seq,
+                                    grip_edge=selected.edge, generation=selected.generation,
+                                    coalesced_pose_frames=receiver.coalesced,
+                                    selection_age_s=time.monotonic()-frame.received_monotonic_s)
             yield frame
+        elif receiver.finished:
+            return
+        else:
+            time.sleep(.001)
 
 
 def main(args=None):
-    """持续记录实际反馈、完整XR帧和双侧IK；返回0完成、1失败或130中断。"""
+    """连续记录XR并选择最新位姿求解；显式执行，返回0完成、1失败或130中断。"""
     options = parser().parse_args(args)
-    if options.execute:
-        print('首轮遥操入口只读，尚未开放--execute。', file=sys.stderr)
-        return 1
-    source = recorder = xr_log = diagnostics = port = node = None
+    source = recorder = xr_log = diagnostics = port = node = client = receiver = None
     initialized = False
     reason, result = 'failed', 1
     try:
+        options.compensation_requested = options.compensation
+        options.compensation = options.execute and options.compensation
+        if options.execute and options.input_timeout is None:
+            options.input_timeout = .5
+        display = MappingDisplay(options.display_interval)
         for name, lower, upper in (('feedback_timeout', .2, 1.), ('timeout', 1., 10.)):
             value = getattr(options, name)
             if not math.isfinite(value) or not lower <= value <= upper:
@@ -134,6 +129,9 @@ def main(args=None):
             value = getattr(options, name)
             if value is not None and (not math.isfinite(value) or value <= 0):
                 raise ValueError(f'{name}须为有限正秒数')
+        if options.compensation and (not math.isfinite(options.compensation_duration)
+                                     or options.compensation_duration <= 0):
+            raise ValueError('compensation-duration须为有限正秒数')
         input_config = InputConfig.load(options.input_config)
         mapping_config = MappingConfig.load(options.mapping_config)
         source = SDKSource(options.sdk_library)
@@ -141,10 +139,11 @@ def main(args=None):
             log_directory(options.log_dir), command='upper_body_teleop_observe',
             options=vars(options), code_sha256=code_manifest(),
             mapping_config=asdict(mapping_config), input_config=asdict(input_config),
-            execute=False, compensation_enabled=False,
+            execute=options.execute, compensation_enabled=options.compensation,
             reference_policy='mc_command_first_grip_then_accepted_ideal_restart_on_failure')
         xr_log = XRLog(
-            options.xr_output, device_id=options.device_id, input_config=asdict(input_config),
+            options.xr_output, unique_path=True,
+            device_id=options.device_id, input_config=asdict(input_config),
             sdk_library=str(source.library_path),
             sdk_sha256=hashlib.sha256(source.library_path.read_bytes()).hexdigest(),
             snapshot_api='PXREAInit/ctypes', python=sys.version,
@@ -158,38 +157,133 @@ def main(args=None):
         node = rclpy.create_node('upper_body_teleop_observe')
         if node.get_parameter('use_sim_time').value:
             raise ValueError('实际反馈观测不支持use_sim_time')
-        port = UpperBodyExecutor(rclpy, node, options, diagnostics)
+        port_class = UpperBodyTeleopExecutor if options.execute else UpperBodyExecutor
+        port = port_class(rclpy, node, options, diagnostics)
+        if options.execute:
+            from aimdk_msgs.srv import GetMcAction
+
+            client = node.create_client(GetMcAction, '/aimdk_5Fmsgs/srv/GetMcAction')
+            confirm_initial_mode(rclpy, node, options, diagnostics, client)
         arms = {side: ArmKinematics(side, tcp_mode='gripper') for side in ('left', 'right')}
+        if options.compensation:
+            from .upper_body_compensation import PositionCompensation
+
+            port.compensation = ArmCompensationGroup({
+                side: PositionCompensation(arm, 0., (0., 0., 0.)) for side, arm in arms.items()})
+            diagnostics.record(
+                'compensation_config', duration_s=options.compensation_duration,
+                engagement='quintic_per_side_first_grip_no_reset_on_regrip',
+                arms={side: dict(calculator.describe(), engagement='quintic_per_side_first_grip')
+                      for side, calculator in port.compensation.calculators.items()})
+            print(f'双臂补偿默认开启，空载；每侧首次Grip后{options.compensation_duration:g}秒从零引入。', flush=True)
         values = port.capture(refreshed_after=time.monotonic())
         captured = port.capture_target(values)
-        solver = DualArmOnlineIK(captured, arms)
-        diagnostics.record('snapshot', arm_names=list(ARM_NAMES),
-                            streams={name: asdict(value) for name, value in values.items()})
-        diagnostics.record('online_ik_config', **solver.describe())
-        session = Session(mapping_config)
+        if options.execute:
+            port.start_background()
+            # 先完成DDS匹配，首次Grip前定时器没有在线目标，不会发布。
+            port.enable_commands(captured)
 
-        def live_reference(frame):
-            """校验输入与反馈时效，生成HAL首次接管或理想目标重接管参考。"""
-            values = port.feedback.checked()
-            if time.monotonic() - frame.received_monotonic_s > options.input_timeout:
-                raise InputUnavailable('映射前XR帧年龄超过显式input-timeout')
-            return command_reference(frame, values, solver, mapping_config, diagnostics)
-
-        print(f'只读IK日志：{diagnostics.path}；XR日志：{xr_log.path}', flush=True)
+        print(f'{"执行" if options.execute else "只读IK"}日志：{diagnostics.path}；'
+              f'XR日志：{xr_log.path}', flush=True)
         source.start()
-        replay_frames(live_frames(source, recorder, port, options), session, solver,
-                      diagnostics, reference_provider=live_reference)
+        receiver = LatestInput(source, recorder, mapping_config, diagnostics, options,
+                               lock=port.command_lock if options.execute else None,
+                               on_error=port.stop if options.execute else None)
+        if options.execute:
+            port.input_receiver = receiver
+        diagnostics.record('live_input_policy', pose_hz=20.,
+                           pose_policy='latest_complete_frame', grip_policy='ordered_edges_hold_motion')
+        receiver.start()
+        print('等待XR完整帧；位姿IK上限20Hz，Grip边沿保序处理；Ctrl-C结束。', flush=True)
+        frames = iter(live_frames(receiver, port, options))
+        first_frame = initial_values = None
+        if options.execute:
+            print(f'URS/RUNNING已确认；等待首次Grip，接管后输入时限{options.input_timeout:g}秒。', flush=True)
+            diagnostics.record('teleop_waiting_for_grip', grip_threshold=mapping_config.grip_threshold)
+            for frame in frames:
+                if any(getattr(frame, side).grip >= mapping_config.grip_threshold for side in ('left', 'right')):
+                    first_frame = frame
+                    break
+            if first_frame is None:
+                diagnostics.record('teleop_no_takeover', published_count=port.sequence)
+                print('会话结束，未按Grip接管，未下发指令。', flush=True)
+            else:
+                # 首次控制完整14轴均从此刻新鲜HAL命令建立，包含尚未按Grip的一侧。
+                initial_values = port.feedback.checked()
+                captured = port.capture_target(initial_values)
+                port.captured = captured
+                values = initial_values
+                frames = chain((first_frame,), frames)
+        if not options.execute or first_frame is not None:
+            solver = DualArmOnlineIK(captured, arms)
+            diagnostics.record('snapshot', arm_names=list(ARM_NAMES),
+                                streams={name: asdict(value) for name, value in values.items()})
+            diagnostics.record('online_ik_config', **solver.describe())
+            session = Session(mapping_config)
+
+            def live_reference(frame):
+                """校验输入与反馈时效，生成HAL首次接管或理想目标重接管参考。"""
+                if options.execute:
+                    port.check_background()
+                values = (initial_values if first_frame is not None and frame.seq == first_frame.seq
+                          else port.feedback.checked())
+                if (options.input_timeout is not None
+                        and time.monotonic() - frame.received_monotonic_s > options.input_timeout):
+                    raise InputUnavailable('映射前XR帧年龄超过显式input-timeout')
+                return command_reference(frame, values, solver, mapping_config, diagnostics)
+
+            def before_live_commit():
+                """在共同提交锁内复核输入及反馈，拒绝跨Grip边沿的旧普通候选。"""
+                if options.execute:
+                    port.check_background()
+                    port.check_input_timeout(time.monotonic())
+                receiver.check()
+                port.feedback.checked()
+                if (options.input_timeout is not None and time.monotonic()
+                        - receiver.selected.frame.received_monotonic_s > options.input_timeout):
+                    raise InputUnavailable('求解完成时XR帧年龄超过input-timeout')
+                return receiver.can_commit()
+
+            def hold_edge_motion(frame):
+                """边沿只建立参考或保持，普通帧才推进双侧运动目标。"""
+                return receiver.selected.edge
+
+            if options.execute:
+                with receiver.lock:
+                    receiver.activate()
+                    receiver.check()
+                    port.begin_online(solver.store, first_frame)
+            replay_frames(frames, session, solver,
+                          diagnostics, reference_provider=live_reference, display=display,
+                          timing_provider=live_result_timing,
+                          before_commit=before_live_commit,
+                          on_error=port.stop if options.execute else None,
+                          commit_lock=receiver.lock, hold_motion=hold_edge_motion)
+        if options.execute:
+            port.stop()
+            port.check_background()
+        receiver.check()
         reason, result = 'completed', 0
     except KeyboardInterrupt:
+        if port is not None:
+            port.stop()
         reason, result = 'interrupted', 130
     except Exception as error:
+        if port is not None:
+            port.stop()
+        if receiver is not None:
+            receiver.close()
         if diagnostics is not None:
             diagnostics.record('error', error_type=type(error).__name__, message=str(error))
         if xr_log is not None:
             xr_log.record('error', error_type=type(error).__name__, message=str(error))
-        print(f'只读观测失败：{error}', file=sys.stderr)
+        print(f'遥操{"执行" if options.execute else "观测"}失败：{error}', file=sys.stderr)
     finally:
-        # 先停止SDK并保存剩余原始事件，再释放ROS资源，最后关闭两份日志。
+        # 先停发，再停止SDK并保存剩余原始事件，最后释放ROS和日志。
+        if port is not None:
+            port.stop()
+        if receiver is not None:
+            receiver.close()
         try:
             if source is not None:
                 try:
@@ -216,6 +310,8 @@ def main(args=None):
             try:
                 if port is not None:
                     port.close()
+                if client is not None:
+                    node.destroy_client(client)
                 if node is not None:
                     node.destroy_node()
                 if initialized and rclpy.ok():

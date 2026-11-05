@@ -14,23 +14,37 @@ from aimdk_functions.upper_body_teleop_replay import read_snapshot
 
 
 class ObserveTimingTests(unittest.TestCase):
-    """使用SDK和ROS替身验证输入年龄的检查位置，不加载原生SDK。"""
+    """验证主线程只消费选中帧，SDK读取已迁移到独立接收器。"""
 
-    def test_age_is_checked_after_recording(self):
-        """模拟consume同步写盘后时间推进，过期帧必须在yield前被拒绝。"""
-        frame = SimpleNamespace(seq=1, received_monotonic_s=0., source_time_ns=100)
-        event = SimpleNamespace(kind='device_state', device_id='pico')
-        source = Mock(backlog=0)
-        source.read.return_value = event
-        recorder = Mock()
-        recorder.consume.return_value = frame
+    def test_selected_frame_is_delivered_without_reading_sdk(self):
+        """主线程等待时不复用旧帧，边沿元数据随选中帧记录。"""
+        frame = SimpleNamespace(seq=1, received_monotonic_s=100.)
+        receiver = Mock(finished=False, coalesced=4)
+        receiver.take.return_value = SimpleNamespace(frame=frame, edge=True, generation=1)
         port = Mock()
         port.rclpy.ok.return_value = True
-        options = SimpleNamespace(duration=None, input_timeout=.5, device_id='pico')
-        with patch.object(observe.time, 'monotonic', side_effect=[0., 1.]):
-            with self.assertRaisesRegex(InputUnavailable, '积压帧年龄'):
-                next(observe.live_frames(source, recorder, port, options))
-        recorder.consume.assert_called_once_with(event, 0)
+        options = SimpleNamespace(execute=True)
+        with patch.object(observe.time, 'monotonic', return_value=100.):
+            self.assertIs(next(observe.live_frames(receiver, port, options)), frame)
+        port.observe_input.assert_called_once_with(frame)
+        receiver.take.assert_called_once_with(100.)
+
+    def test_finished_input_ends_stream(self):
+        """接收会话结束且无待交付帧时退出。"""
+        receiver = Mock(finished=True)
+        receiver.take.return_value = None
+        port = Mock()
+        port.rclpy.ok.return_value = True
+        self.assertEqual(list(observe.live_frames(receiver, port, SimpleNamespace(execute=False))), [])
+
+    def test_input_failure_propagates(self):
+        """主线程选择帧时传播接收线程的锁存错误。"""
+        receiver = Mock()
+        receiver.take.side_effect = InputUnavailable('XR积压帧年龄超过input-timeout')
+        port = Mock()
+        port.rclpy.ok.return_value = True
+        with self.assertRaisesRegex(InputUnavailable, '积压帧年龄'):
+            next(observe.live_frames(receiver, port, SimpleNamespace(execute=True)))
 
 
 class SnapshotReferenceTests(unittest.TestCase):

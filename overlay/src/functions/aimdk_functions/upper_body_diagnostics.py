@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 import time
+import threading
 import uuid
 
 
@@ -50,6 +51,7 @@ class UpperBodyLog:
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / f'upper_body_{time.time_ns()}_{uuid.uuid4().hex[:8]}.jsonl'
         self.stream = self.path.open('x', encoding='utf-8')
+        self.lock = threading.RLock()
         self.started = time.monotonic()
         try:
             self.record('metadata', **metadata)
@@ -59,18 +61,20 @@ class UpperBodyLog:
 
     def record(self, event, **fields):
         """增量记录 JSON 兼容 fields；非有限浮点保留为字符串，不支持的对象明确报错。"""
-        now = time.monotonic()
-        line = json.dumps(dict(event=event, wall_time_ns=time.time_ns(),
-                               monotonic_s=now, elapsed_s=now - self.started,
-                               fields=json_value(fields)), ensure_ascii=False, allow_nan=False)
-        self.stream.write(line + '\n')
-        self.stream.flush()
+        with self.lock:
+            now = time.monotonic()
+            line = json.dumps(dict(event=event, wall_time_ns=time.time_ns(),
+                                   monotonic_s=now, elapsed_s=now - self.started,
+                                   fields=json_value(fields)), ensure_ascii=False, allow_nan=False)
+            self.stream.write(line + '\n')
+            self.stream.flush()
 
     def close(self, reason='closed'):
         """写入退出原因并关闭；可重复关闭，写盘错误传播，强制断电持久性不保证。"""
-        if self.stream.closed:
-            return
-        try:
-            self.record('exit', reason=reason)
-        finally:
-            self.stream.close()
+        with self.lock:
+            if self.stream.closed:
+                return
+            try:
+                self.record('exit', reason=reason)
+            finally:
+                self.stream.close()

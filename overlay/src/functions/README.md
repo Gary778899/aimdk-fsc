@@ -242,7 +242,7 @@ ROS节点创建后立即建立反馈订阅，先于模式查询和运动学模�
 | `upper_body_control.py` | 参数、单次生命周期与日志 |
 | `upper_body_control_core.py` | 分侧目标、统一轨迹、双臂合并；`prepare_motion_target()`统一生成补偿目标并校验所选关节范围及未选目标保持 |
 | `upper_body_execution.py` / `upper_body_mode.py` | 单发布器、时间调度、终点确认／有界模式查询 |
-| `upper_body_cartesian_core.py` | 完整目标契约、TCP端点与直线纯IK规划 |
+| `upper_body_cartesian_core.py` | 完整目标契约；端点与直线规划共用`_prepare_translation()`准备起点、模型、FK、SEW和位移，再分别求解与生成报告 |
 | `upper_body_ros.py` / `dual_arm_control_core.py` | ROS反馈适配／纯解码、时效、错误锁存、关节插值 |
 | `upper_body_compensation.py` | 分侧位置偏置计算 |
 | `upper_body_diagnostics.py` | 共用增量日志、工作区日志目录探测及代码摘要 |
@@ -260,7 +260,9 @@ ros2 run aimdk_functions arm_compensation_probe --tag URS
 probe保存metadata、图快照、原始events、summary与report；其退出码0表示观测完整且模式匹配，
 不作为补偿有效性结论。详细字段和历史记录见[整理前说明](../../../docs/archive/upper_body_commands_before_unification_20261030.md)。
 
-预览和执行均调用`prepare_motion_target()`，执行器复用`check_publish_gap()`检查计算前与实际发送前的发布间隔。发布周期、间隔上限、终点稳定时间和额外等待时限集中在`upper_body_execution.py`，数值沿用上文约定。反馈错误、时效及模式检查继续由既有反馈和模式模块负责。本次整合仅完成本地静态检查，待机器人Humble容器构建与执行验证；遥操代码保持原实现。
+预览和执行均调用`prepare_motion_target()`；执行器在实际发送前调用`check_publish_gap()`检查发布间隔。发布周期、间隔上限、终点稳定时间和额外等待时限集中在`upper_body_execution.py`，数值沿用上文约定。反馈错误、时效及模式检查继续由既有反馈和模式模块负责。本次整合仅完成本地静态检查，待机器人Humble容器构建与执行验证；遥操代码保持原实现。
+
+校验职责：`CapturedTarget`检查完整目标的长度、有限值和夹爪开度，`for_arm()`检查单臂候选及所选臂起点/目标范围；规划层检查10°变化与路径分支，`validate_target()`检查动作所选关节范围和未选关节保持。IK适配器已校验求解结果的有限值，端点规划直接使用该候选；零位移及直线首点复用已校验的采样目标。补偿计算后仍校验新目标，执行器检查新鲜反馈及跟踪误差，消息组装层使用已校验目标和执行器生成的uint32序号。
 
 ## 机器人端验收与待办
 
@@ -331,6 +333,7 @@ ros2 run aimdk_functions upper_body_acceptance --steps 3 --snapshot-log /实际�
 | 单爪及双爪独立开度 | 首帧更新所选开度，双臂保持，不因state/速度中止，故障仍中止 |
 | 非有限/缺少一侧/混用参数/超限输入 | 规划拒绝且未发布动作 |
 | 反馈故障、正常结束与人工中断 | 错误锁存，统一停发，无自动返程或模式切换 |
+| 关闭补偿，以5秒时长左右分别预览TCP零位移、单轴及XYZ位移的endpoint/line | 零位移保留采样目标；两类报告字段完整，line为5秒251点；所选臂超限及超过10°变化仍拒绝，未选臂保持 |
 
 待办：独立验证实体法兰面中心与腕原点的平移/方向关系；验证双臂调度周期、右臂/双臂补偿收益、
 实体直线精度与退出后的保持行为。当前配置不包含实体TCP标定结论。
@@ -357,11 +360,12 @@ ros2 run aimdk_functions upper_body_teleop_replay \
 离线快照固定，首次Grip不能模拟现场重新采样命令；后续重按使用最后已接受理想目标。
 
 `upper_body_online_core.DualArmOnlineIK`的`propose()`计算完整双侧候选，`validate_commit()`核对候选归属与版本，
-`commit()`统一提交关节、SEW、分支与目标存储；调用方串行使用。无解、越限、分支改变或相邻／会话总变化超过10°时，
-两侧状态均保持上一已接受值。现场每侧首次Grip同时建立该侧10°范围起点，后续重按保持此起点。
+`commit()`统一提交关节、SEW、分支与目标存储；调用方串行使用。无解、越限或分支改变时，
+两侧状态均保持上一已接受值。相邻及累计关节变化只记录，超过早期10°实验范围标记`exceeds_10deg_observation`，不据此拒绝。
+现场每侧首次Grip建立累计变化参考，后续重按保持此参考。
 目标须位于`torso_link`，单位m和rad，未使能侧保持上一目标。
 零增量保持种子；FK残差记录到日志。输入映射和IK均预检通过后才联合提交。
-`OnlineTargetStore`保存完整目标、关联输入序号和单调接受时间，供后续持续发布读取。
+`OnlineTargetStore`保存完整目标、关联输入序号和单调接受时间，执行模式的发布侧读取同一快照。
 
 输出沿用工作区`log/upper_body_*.jsonl`，记录真实快照、配置哈希、模型及TCP来源、XR输入、
 映射目标、双侧候选、残差、耗时和接受／拒绝原因。首个失败停止回放，退出码1；成功接受至少一帧并完成读回后退出0。
@@ -374,34 +378,200 @@ python3 -m unittest discover -s src/functions/test -p 'test_upper_body_*.py'
 ### 现场只读IK与统计
 
 `upper_body_teleop_observe`连接SDK、原始机器人反馈及MC的HAL手臂位置命令，保存XR与IK两份日志。
-补偿关闭，拒绝`--execute`，不创建运动发布器。在机器人容器运行：
+`--xr-output`指定的文件已存在时，自动依次使用`文件名_1.jsonl`、`文件名_2.jsonl`，保留已有日志；终端显示实际XR路径。
+当前现场映射配置使用Grip时固定的头显水平朝向，须同时开启Head及Controller tracking；
+操作契约见[输入包映射配置](../remote_control/README.md#映射配置)。
+历史无Head日志回放须使用`reference_mode=world`的配置。
+朝向验收先只读：面向任意方向，按Grip后依次向自身前、左、上移动，目标增量应分别以正X、正Y、正Z为主；
+保持手柄位姿只转头，目标应保持；重新Grip后按新的头显朝向对齐。左右侧分别验证。
+`mapping_candidate`记录每侧`head_yaw_rad`及实际`mapping_basis`，对应参考只在候选接受时生效。
+默认只读、补偿关闭；显式`--execute`开启下节定义的持续发布。在机器人容器只读运行：
 
 ```bash
 ros2 run aimdk_functions upper_body_teleop_observe \
   --device-id 实际设备标识 --input-config /实际路径/input.json \
   --mapping-config /实际路径/mapping.json \
   --xr-output /home/agi/aimdk-fsc/log/xr_observe.jsonl \
-  --input-timeout 实测确定的秒数 --duration 60 \
+  --duration 60 \
   --load-description '实际工具和负载'
 ros2 run aimdk_functions upper_body_teleop_stats /实际路径/upper_body_观测或回放.jsonl
 ```
 
-`--input-timeout`显式配置接收、源时间停滞及排队年龄时限；跟踪失效、断链或时间回退终止本次观测。
+首帧及停流期间持续等待新XR帧，记录接收间隔、帧年龄和积压；等待期间不重复求解缓存帧。
+现场输入由独立接收线程持续解析、校验并记录全部回调和完整帧。
+普通位姿以20Hz为上限选取最新完整双手柄帧，未选中的普通帧合并，不补算错过的周期。
+两侧Grip按下／松开的完整帧按接收顺序保留，优先于普通位姿处理，不受50ms选帧间隔限制。
+边沿帧只建立参考或保持双侧已接受位姿与夹爪，不推进运动求解；普通帧才更新运动目标。
+普通候选求解期间出现任一侧新Grip边沿时，丢弃整个双侧候选，继续处理边沿；已接受状态保持。
+合并前逐帧检查跟踪、连接、设备／参考空间及源时间回退，异常终止会话。
+原始XR日志保留完整输入；IK日志的`xr_input`只包含被选中的帧，离线回放仍按完整输入FIFO处理。
+`--duration`包含等待时间，省略时运行至Ctrl-C。首帧等待期间可在头显选择Reconnect并开启Controller／Send。
+`--timeout`用于初始机器人反馈等待，默认5秒、范围1..10秒；执行时还复用到模式查询及DDS匹配。
+`--input-timeout`为可选观测实验参数，显式指定时才按接收间隔、源时间停滞及帧年龄中止。
+跟踪失效、断链或时间回退终止本次观测。
 缺少跟踪或重定位字段时按输入包配置及现场操作约定处理。反馈时限沿用0.5秒，可在0.2..1秒内配置。
 
 机器人侧参考按以下三种情况建立，手柄增量始终相对于本次Grip按下时的手柄位姿：
 
 | 情况 | 机器人侧TCP与IK参考 |
 | --- | --- |
-| 每侧首次Grip | 使用按下时新鲜的`/aima/hal/joint/arm/command`位置，建立该侧FK、IK种子、SEW和实验范围起点；分支从空状态开始跟踪 |
-| 同一会话松开后重按 | 使用该侧最后已接受理想目标的FK，延续IK种子、SEW、分支和实验范围起点 |
+| 每侧首次Grip | 使用按下时新鲜的`/aima/hal/joint/arm/command`位置，建立该侧FK、IK种子、SEW和累计变化参考；分支从空状态开始跟踪 |
+| 同一会话松开后重按 | 使用该侧最后已接受理想目标的FK，延续IK种子、SEW、分支和累计变化参考 |
 | 中断后恢复 | 当前入口异常退出，操作者重启入口；重新采样HAL命令，各侧首次Grip重新建立参考 |
 
-首次接管的参考与双侧IK候选共同提交，任一侧失败均不更新。未接管侧保持启动采样的HAL目标。
+首次接管的参考与双侧IK候选共同提交，任一侧失败均不更新。
+执行模式首次接管时刷新完整14轴HAL参考，尚未接管侧保持此目标；只读模式未接管侧保持启动采样值。
 实际手臂反馈继续参与故障、源时间与时效检查；记录HAL命令与实际位置差及源时间差。
 `mapping_reference`关联输入序号、各侧参考来源、参考关节及反馈序号；首次接管标记见`rebase_sides`。
+独立接收后，HAL参考在主线程处理Grip按下帧时采样；保留该帧原始接收时间及参考反馈时间供核对。
 夹爪初值取实际开度，接管期间按映射配置更新，松开后保持已接受开度。
-当前只读入口补偿关闭；后续执行接入须沿用理想目标与补偿后发送目标分离的约定。
+只读观测保留理想IK目标；执行模式默认开启补偿，分别记录理想目标和实际发送目标。
 
 统计读回输入与结果关联、双侧残差及耗时P50/P95/P99/最大值；20ms计数仅用于观测计算负载。
-统计退出0表示读回成功；`replay_complete`表示日志中每个输入均有成功结果及正常结束记录。
+统计退出0表示读回成功；`replay_complete`表示每个选中输入均有成功或被新Grip边沿取代的结果及正常结束记录。
+`input_selected`记录边沿标记、选帧年龄与累计合并数；`ik_superseded`关联丢弃候选的输入序号。
+统计中的`input_selection`汇总选帧和合并计数，`superseded_inputs`列出被边沿取代的普通候选。
+
+### 遥操持续执行
+
+`upper_body_teleop_observe --execute`复用原生`/mc/upper_body_command`，不切换模式。
+位置偏置补偿默认开启，`--no-compensation`用于关闭对照。复用[既有补偿算法](#位置偏置补偿与负载)，
+刚度40 N·m/rad、偏置限幅±12°；本轮附加载荷固定0kg，对应gripper空载。
+开启时订阅骨盆IMU及具名腰反馈；只读模式不启用补偿计算或新增这两路订阅。
+每侧首次Grip后按`--compensation-duration`秒的五次曲线从零引入，默认5秒，独立于会话`--duration`。
+尚未接管侧保持目标，已接管侧松开及重按Grip均保持补偿进度；异常重启后重新从零引入。
+理想关节和已接管侧随同一缓存快照提交，50Hz发布侧计算补偿，补偿结果不写回IK种子或Grip参考。
+启动时通过`GetMcAction`确认URS/RUNNING，沿用实际MC模式、故障及反馈源时间检查。
+首次Grip前完成DDS匹配但不发布；首次Grip时重新采样完整HAL手臂位置命令，
+建立双侧种子后立即发送与该命令一致的零增量首帧。
+之后以50Hz发送最新完整已接受目标；输入接收、位姿选择和Grip处理见上节。
+松开Grip保持最后目标并继续发布，重按延续同一发布会话。
+
+执行模式的`--input-timeout`默认0.5秒，可显式调整；首次Grip前不应用输入时限。
+接管后，接收线程按原始时间检查回调间隔、接收处理年龄及已知源时间停滞。
+发布线程同时检查接收线程异常和主线程已选帧的原始接收年龄；后者包括选帧／求解等待。
+提交前复核选中帧年龄，任一检查超过同一`input-timeout`即停发并退出。
+接收线程的新帧不会刷新主线程处理时间。`command_published.input_age_s`记录主线程选中帧年龄，
+`latest_receive_age_s`记录接收线程最近完整帧年龄，两者均使用原始接收时间。
+0.5秒是首轮试验值，依据此前接收最大间隔约75ms选取，实际响应待真机验证。
+显式断链、跟踪失效、时间回退、IK失败、反馈故障／失效、Ctrl-C或会话结束均停发。
+退出后由操作者重启，从新鲜HAL命令重新建立参考；停发后的实体保持与超时行为须现场记录。
+
+ROS反馈及发布定时器运行在独立单线程执行器，接收线程独占XR录制器，主线程处理映射并求解IK。
+发布侧也检查输入时限，IK阻塞时可独立停发；接收边沿、目标联合提交与发布／停发共用锁。
+退出时先停发、结束接收线程，再关闭SDK、排空原始回调并关闭日志。
+反馈采样和执行JSONL写盘分别加锁。发布周期20ms、发布间隔上限80ms、
+启动漂移±3°复用既有原生执行器约定；遥操关节跟踪误差仅作观测，超过±5°继续发布。
+关节限位、反馈故障／时效、输入时限和发布间隔检查继续生效。
+线程隔离后的实际周期、GIL及同步日志开销由容器日志确认。
+
+`teleop_execution_begin.tracking_policy=observation_only`标明本轮跟踪策略，
+`tracking_observation_limit_rad`为既有5°的rad值，仅用于观测标记。
+`command_published`记录本次使用的`actual_arm_rad`，`tracking_error_rad`为实际位置减本条发送目标，
+`previous_target_tracking_error_rad`为同一反馈减此前最近成功发送目标；后者首帧为null。
+前目标及序号分别保存在`previous_sent_arm_rad`和`previous_command_sequence`，首帧为null。
+这两项误差按发布回调取得的反馈计算，不代表硬件同步或目标到位判定。
+`tracking_exceeds_5deg_observation`及`previous_target_tracking_exceeds_5deg_observation`分别标记
+是否有任一关节超过5°，不改变发布状态。验收时超过5°应持续记录并发送，反馈故障或输入失效仍停发。
+`upper_body_teleop_stats`分别输出两种最大绝对关节误差的分布、超5°帧数和观测样本数；
+历史日志缺失前目标字段时不补样本。该变更仅适用于遥操，`upper_body_control`沿用既有跟踪及终点门槛。
+
+本次20Hz策略待机器人容器验证：先只读运行，分别持续移动单侧及双侧手柄，确认
+`selection_age_s`和`input_age_s`不持续增长；快速松开／重按应依次记录`released`和`reference_established`。
+执行时确认普通候选跨Grip边沿记录`ik_superseded`且目标保持，发布间隔仍符合既有80ms上限。
+
+在已手动进入URS/RUNNING、Service运行且PICO持续发送时，在机器人容器执行：
+
+```bash
+cd /home/agi/aimdk-fsc
+bash scripts/build_overlay.sh remote_control aimdk_functions
+source /home/agi/aimdk/install/setup.bash
+source /home/agi/aimdk-fsc/install/local_setup.bash
+
+TELEOP_LOG_DIR="/home/agi/aimdk-fsc/log/teleop_$(date +%Y%m%d_%H%M%S)"
+ros2 run aimdk_functions upper_body_teleop_observe \
+  --device-id TestDevice \
+  --input-config /home/agi/aimdk-fsc/src/remote_control/config/input.json \
+  --mapping-config /home/agi/aimdk-fsc/src/remote_control/config/mapping.json \
+  --sdk-library /opt/apps/roboticsservice/SDK/arm64/libPXREARobotSDK.so \
+  --xr-output "$TELEOP_LOG_DIR/xr_input.jsonl" \
+  --log-dir "$TELEOP_LOG_DIR" \
+  --timeout 10 --input-timeout 0.5 --duration 60 --display-interval 1 \
+  --load-description 'gripper，空载' --execute
+
+TELEOP_IK_LOGS=("$TELEOP_LOG_DIR"/upper_body_*.jsonl)
+ros2 run aimdk_functions upper_body_teleop_stats "${TELEOP_IK_LOGS[0]}"
+```
+
+首轮依次验证零增量保持、右臂小幅平移及旋转、松开／重按、左臂及双臂动作。
+预期首帧14轴命令匹配接管HAL参考，补偿从零引入；松开保持理想目标，补偿继续根据姿态反馈计算，重按连续。
+关闭Send后预期约0.5秒加调度开销内停发；记录实体响应，重新运行后可从当前HAL目标接管。
+`command_published`记录输入序号、接受时刻、发送位置、发布间隔、输入年龄及跟踪误差。
+`compensation.arms`记录各侧引入进度、重力估计、原始／限幅偏置及IMU／腰源时间。
+首次零增量发送的输入序号为空；后续发送关联最近的已接受IK输入。
+统计增加`execution`及发布耗时分布；`accepted_inputs_not_published`列出50Hz采样未发送的IK输入，
+`unknown_published_inputs`正常应为空。当前只完成本地静态检查，容器执行及实体跟随待验证。
+
+### 映射检查与原节奏回放
+
+回放和现场只读入口均支持`--display-interval 秒数`，默认1，0关闭终端映射输出。
+Grip建立参考、松开和失败立即显示。输出标明输入序号及接受／拒绝结果，左右分别显示
+Grip、Trigger、相对本次Grip参考的手柄／TCP平移m和旋转向量度。
+旋转向量在各自父坐标系表达，180°时旋转轴整体反号等价；完整旋转矩阵保存在日志中。
+
+`mapping_candidate`逐帧保存每侧事件、手柄与机器人参考位姿、输入增量、TCP增量、
+TCP目标及夹爪开度。它描述待提交候选，接受情况以同序号`ik_accepted`／`ik_rejected`为准。
+`reference_established`表示本次候选建立参考，`tracking`表示沿用参考，
+`released`表示松开，`holding`表示保持，`blocked`表示参考重置后等待松开Grip。
+
+首个失败仍终止处理。`ik_rejected`包含失败输入、上一成功输入及目标、映射候选、
+双侧IK状态与映射参考的前后快照；IK报告保留已算出的候选关节、步长、SEW及分支。
+快照中的`last_consumed_seq`随输入消费推进，已提交参考与理想目标按联合提交规则保持。
+统计的`first_failure`提供失败序号、上一成功序号及IK／映射参考是否保持。
+
+回放默认`--replay-timing immediate`，尽快逐帧计算；`recorded`以首帧为锚点，
+按原始接收单调时间差调度。处理落后时按FIFO消费，不跳帧、不重新设置时间锚点。
+回放预载全部完整帧后开始调度；文件损坏、失联记录或时间异常在`replay_input_error`中报告，
+不进入IK。输入格式错误包含文件、行号和可用输入序号。
+
+```bash
+ros2 run aimdk_functions upper_body_kinematics_check \
+  --samples 1 --include-arm-command --load-description '实际工具和负载'
+ros2 run aimdk_functions upper_body_teleop_replay \
+  --xr-log /实际路径/xr_input.jsonl \
+  --mapping-config /实际路径/mapping.json \
+  --snapshot-log /实际路径/含HAL命令的快照.jsonl \
+  --load-description '实际工具和负载' \
+  --replay-timing recorded --display-interval 1
+ros2 run aimdk_functions upper_body_teleop_stats /实际路径/回放日志.jsonl
+```
+
+`input_timing`和`frame_result_timing`记录调度、结果时刻及耗时，统计按时间语义分组：
+
+| 分组／字段 | 定义 |
+| --- | --- |
+| `live` | 本进程SDK回调接收至消费／结果的时间；`backlog_events`为消费时剩余SDK事件数 |
+| `replay_recorded` | 计划到达至消费／结果的时间；`backlog_frames`为当前帧之外已经到期的等待帧数 |
+| `replay_immediate` | 只统计处理耗时，输入年龄、输入至结果耗时及等待帧数为空 |
+| `receive_gap_s` | 原始相邻完整帧接收时间差，首帧为空 |
+| `processing_age_s` | 实时为回调接收至归一化及原始帧写盘后的时间；回放为计划到达至本帧交付的时间 |
+| `input_to_result_s` | 回调接收或计划到达至本帧结果记录完成的时间，不含后续终端显示 |
+| `service_seconds` | 回放调度器交付本帧至结果记录完成的时间，包含同步诊断写盘 |
+
+原始源时间与接收时间保持不变，回放计划时间单独记录；不计算跨设备延迟。
+统计报告各组耗时、接收／结果间隔和积压的P50/P95/P99/最大值、样本数、积压首末值及增长次数，
+并报告映射候选事件序号与各轴增量范围。`mapping_and_ik_seconds`包含输入及映射诊断写盘，
+`dual_ik_seconds`单独计量双侧求解与校验。20ms计数只作负载观测。
+
+容器验收按以下操作与预期结果执行：
+
+1. 首次按Grip并保持手柄不动：手柄和TCP增量为零，现场该侧关节目标等于本次HAL命令参考。
+2. 分别沿手柄三个轴平移、绕三个轴旋转：TCP方向符合`basis`，位移符合`translation_scale`；
+   `relative`姿态遵循坐标变换，`fixed`姿态的TCP旋转增量为零。
+3. 松开、移动手柄、重新按Grip：松开期间保持目标，重按后增量归零，参考延续最后接受的理想目标。
+4. 回放含单侧无解或越限的输入：首个失败保存输入及候选，两侧IK状态保持，后续输入不再求解。
+5. 对同一日志分别使用`immediate`及`recorded`：比较输入至结果耗时与积压，记录Orin负载。
+   周期测量时可设`--display-interval 0`，诊断JSONL仍逐帧写盘。该测量覆盖只读链路，50Hz发布另行验证。
+
+新增回归用例覆盖坐标反射、固定姿态诊断、失败状态读回及人工时钟下的FIFO积压；按上节容器测试命令执行。
+本次另补充连续接收、20Hz最新位姿、双侧Grip边沿、跨边沿候选撤销及接收持续时IK阻塞的用例，待容器运行。
