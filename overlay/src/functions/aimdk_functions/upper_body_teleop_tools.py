@@ -48,14 +48,14 @@ class MappingDisplay:
         self.interval, self.clock, self.output = interval, clock, output
         self.last = None
 
-    def show(self, frame, report, accepted, reason=None):
-        """显示手柄／TCP增量及候选结果；没有映射候选时仍显示失败原因。"""
+    def show(self, frame, report, accepted, reason=None, *, transient=False):
+        """显示增量及结果；transient使连续可恢复拒绝沿用显示间隔，避免20Hz刷屏。"""
         if self.interval == 0:
             return
         now = self.clock()
         event = report is not None and any(
             row['event'] in ('reference_established', 'released') for row in report.values())
-        if accepted and not event and self.last is not None and now - self.last < self.interval:
+        if (accepted or transient) and not event and self.last is not None and now - self.last < self.interval:
             return
         self.last = now
         rows = [f'映射 seq={frame.seq} 结果={"accepted" if accepted else "rejected"}']

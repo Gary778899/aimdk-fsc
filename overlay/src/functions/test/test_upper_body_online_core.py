@@ -12,7 +12,7 @@ from aimdk_functions.upper_body_cartesian_core import CapturedTarget
 from aimdk_functions.upper_body_kinematics.parameters import EXECUTION_LIMITS_RAD
 from aimdk_functions.upper_body_online_core import DualArmOnlineIK, OnlineIKFailure
 from aimdk_functions.upper_body_teleop_observe import command_reference
-from aimdk_functions.upper_body_teleop_replay import replay_frames
+from aimdk_functions.upper_body_teleop_replay import recovery_target, replay_frames
 
 
 class FakeArm:
@@ -269,6 +269,147 @@ class OnlineCoreTest(unittest.TestCase):
         inputs = [call.kwargs['frame']['seq'] for call in diagnostics.record.call_args_list
                   if call.args[0] == 'xr_input']
         self.assertEqual(inputs, [1, 2])
+
+    def recovery_frame(self, seq, seconds, x=0., grip=1., trigger=.3):
+        """构造双侧同步移动的XR帧；seconds用于确定恢复过渡进度。"""
+        hand = Controller(Pose((x, 0., 0.), np.eye(3)), grip, trigger, tracking_valid=True)
+        return XRFrame(seq, int(seconds * 1e9), seconds, hand, hand)
+
+    def recovery_session(self):
+        """构造带Trigger夹爪映射的会话，用于验证完整目标保持及过渡。"""
+        return Session(MappingConfig.from_dict(dict(
+            basis=np.eye(3), translation_scale=1., rotation_mode='relative',
+            grip_threshold=.5, gripper_mode='trigger', trigger_openings=(0., 1.),
+            unknown_tracking='reject', base_frame='torso_link')))
+
+    def test_local_failure_holds_both_then_recovers_with_original_frame_time(self):
+        """右侧无解保留双侧及夹爪；新目标可解后在0、0.25、0.5秒提交五次进度。"""
+        session, diagnostics, stop = self.recovery_session(), Mock(), Mock()
+
+        def frames():
+            """逐帧注入空解，检查失败不更新、恢复首帧保持及中点正确。"""
+            yield self.recovery_frame(1, 1.)
+            before, states = self.solver.accepted, dict(self.solver.states)
+            self.arms['right'].fail = True
+            yield self.recovery_frame(2, 2., .2, trigger=.9)
+            self.assertEqual(self.solver.accepted, before)
+            self.assertEqual(self.solver.states, states)
+            yield self.recovery_frame(3, 2.05, .2, trigger=.9)
+            self.assertEqual(self.solver.accepted, before)
+            self.arms['right'].fail = False
+            yield self.recovery_frame(4, 3., .2, trigger=.9)
+            self.assertEqual(self.solver.accepted, before)
+            yield self.recovery_frame(5, 3.25, .2, trigger=.9)
+            for index in (0, 7):
+                self.assertAlmostEqual(self.solver.accepted.arm_rad[index], before.arm_rad[index] + .1)
+            self.assertAlmostEqual(self.solver.accepted.hand_openings[0], .6)
+            yield self.recovery_frame(6, 3.5, .2, trigger=.9)
+
+        count = replay_frames(frames(), session, self.solver, diagnostics, on_error=stop,
+                              ik_recovery_duration=.5)
+        self.assertEqual(count, 4)
+        stop.assert_not_called()
+        self.assertEqual(self.solver.last_input_seq, 6)
+        self.assertAlmostEqual(self.solver.accepted.arm_rad[0], self.captured.arm_rad[0] + .2)
+        failures = [call.kwargs for call in diagnostics.record.call_args_list
+                    if call.args[0] == 'ik_rejected']
+        self.assertEqual([row['input_seq'] for row in failures], [2, 3])
+        for row in failures:
+            self.assertTrue(row['recoverable'])
+            self.assertEqual(row['ik_before'], row['ik_after'])
+            self.assertEqual(row['mapping_before']['sides'], row['mapping_after']['sides'])
+        recoveries = [call.kwargs for call in diagnostics.record.call_args_list
+                      if call.args[0] == 'ik_recovery']
+        self.assertEqual([row['blend'] for row in recoveries], [0., .5, 1.])
+
+    def test_release_during_recovery_holds_intermediate_and_regrip_uses_it(self):
+        """恢复中松开两侧Grip保持中间目标，重按建立新参考并丢弃旧恢复终点。"""
+        session, diagnostics = self.recovery_session(), Mock()
+
+        def frames():
+            """在恢复中点松开，再把手柄移远并重按。"""
+            yield self.recovery_frame(1, 1.)
+            self.arms['right'].fail = True
+            yield self.recovery_frame(2, 2., .2)
+            self.arms['right'].fail = False
+            yield self.recovery_frame(3, 3., .2)
+            yield self.recovery_frame(4, 3.25, .2)
+            middle = self.solver.accepted
+            yield self.recovery_frame(5, 3.3, .4, grip=0.)
+            self.assertEqual(self.solver.accepted, middle)
+            yield self.recovery_frame(6, 3.4, .6, grip=0.)
+            self.assertEqual(self.solver.accepted, middle)
+            yield self.recovery_frame(7, 3.5, .8)
+            self.assertEqual(self.solver.accepted, middle)
+            yield self.recovery_frame(8, 3.6, .8)
+            yield self.recovery_frame(9, 4.1, .8)
+            self.assertEqual(self.solver.accepted, middle)
+
+        def hold_motion(frame):
+            """模拟现场首次Grip、松开和重按边沿的保持语义。"""
+            return frame.seq in (1, 5, 7)
+
+        replay_frames(frames(), session, self.solver, diagnostics,
+                      hold_motion=hold_motion, ik_recovery_duration=.5)
+        self.assertAlmostEqual(self.solver.accepted.arm_rad[0], self.captured.arm_rad[0] + .1)
+        self.assertAlmostEqual(session.describe()['sides']['left']['robot_reference']['position_m'][0],
+                               self.captured.arm_rad[0] + .1)
+
+    def test_recovery_keeps_joint_limit_failure_fatal(self):
+        """打开空解恢复后，已计算候选越限仍停发并终止消费后续帧。"""
+        outside = EXECUTION_LIMITS_RAD[0][1] - self.captured.arm_rad[0] + .01
+        frames = [self.recovery_frame(1, 1.), self.recovery_frame(2, 2., outside),
+                  self.recovery_frame(3, 3.)]
+        diagnostics, stop = Mock(), Mock()
+        with self.assertRaises(OnlineIKFailure):
+            replay_frames(frames, self.recovery_session(), self.solver, diagnostics,
+                          on_error=stop, ik_recovery_duration=.5)
+        stop.assert_called_once()
+        failures = [call.kwargs for call in diagnostics.record.call_args_list
+                    if call.args[0] == 'ik_rejected']
+        self.assertFalse(failures[0]['recoverable'])
+        self.assertEqual(self.solver.last_input_seq, 1)
+
+    def test_stale_failed_candidate_is_superseded_before_recovery(self):
+        """局部空解期间出现新Grip边沿时撤销旧结果，继续处理松开并保持目标。"""
+        session, diagnostics, stop = self.recovery_session(), Mock(), Mock()
+        decisions = iter((True, False, True))
+
+        def before_commit():
+            """第二帧求解期间模拟收到Grip边沿。"""
+            return next(decisions)
+
+        def frames():
+            """首帧建参考、普通帧空解、最后松开。"""
+            yield self.recovery_frame(1, 1.)
+            self.arms['right'].fail = True
+            yield self.recovery_frame(2, 2., .2)
+            yield self.recovery_frame(3, 3., grip=0.)
+
+        count = replay_frames(frames(), session, self.solver, diagnostics,
+                              before_commit=before_commit, on_error=stop, ik_recovery_duration=.5)
+        self.assertEqual(count, 2)
+        stop.assert_not_called()
+        self.assertEqual(self.solver.last_input_seq, 3)
+        self.assertEqual([call.kwargs['input_seq'] for call in diagnostics.record.call_args_list
+                          if call.args[0] == 'ik_superseded'], [2])
+
+    def test_recovery_pose_interpolates_rotation_and_preserves_disabled_side(self):
+        """180度混合符号旋转轴的中间姿态有效，未使能侧及原始时间保持。"""
+        poses = self.solver.tcp_poses()
+        rotation = np.array(((0., -1., 0.), (-1., 0., 0.), (0., 0., -1.)))
+        target = TargetFrame(1, 1234, 10.,
+                             TCPGoal(Pose(np.asarray(poses['left'].position_m) + (.2, 0., 0.),
+                                          rotation), True),
+                             TCPGoal(Pose((100., 0., 0.), rotation), False), (.9, .1))
+        middle = recovery_target(target, poses, self.captured.hand_openings, .5)
+        np.testing.assert_allclose(np.asarray(middle.left.pose.rotation_matrix) @ middle.left.pose.rotation_matrix,
+                                   rotation, atol=1e-12)
+        self.assertAlmostEqual(middle.left.pose.position_m[0], poses['left'].position_m[0] + .1)
+        self.assertEqual(middle.right.pose, poses['right'])
+        self.assertEqual(middle.hand_openings[1], self.captured.hand_openings[1])
+        self.assertEqual((middle.input_seq, middle.source_time_ns, middle.received_monotonic_s),
+                         (1, 1234, 10.))
 
 
 if __name__ == '__main__':

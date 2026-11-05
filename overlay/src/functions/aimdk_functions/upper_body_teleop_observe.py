@@ -45,6 +45,8 @@ def parser():
     result.add_argument('--duration', type=float, help='输入会话秒数，含等待Grip，省略时持续至Ctrl-C')
     result.add_argument('--display-interval', type=float, default=1.,
                         help='映射显示间隔秒数，默认1；Grip事件立即显示，0关闭显示')
+    result.add_argument('--ik-recovery-duration', type=float, default=.5,
+                        help='局部IK无解后恢复过渡秒数，默认0.5')
     result.add_argument('--execute', action='store_true', help='显式开启原生上肢持续执行，要求URS/RUNNING')
     result.add_argument('--compensation', action=argparse.BooleanOptionalAction, default=True,
                         help='执行默认开启位置偏置补偿，--no-compensation关闭')
@@ -127,7 +129,7 @@ def main(args=None):
             value = getattr(options, name)
             if not math.isfinite(value) or not lower <= value <= upper:
                 raise ValueError(f'{name}须为{lower}..{upper}秒')
-        for name in ('input_timeout', 'duration'):
+        for name in ('input_timeout', 'duration', 'ik_recovery_duration'):
             value = getattr(options, name)
             if value is not None and (not math.isfinite(value) or value <= 0):
                 raise ValueError(f'{name}须为有限正秒数')
@@ -142,7 +144,9 @@ def main(args=None):
             options=vars(options), code_sha256=code_manifest(),
             mapping_config=asdict(mapping_config), input_config=asdict(input_config),
             execute=options.execute, compensation_enabled=options.compensation,
-            reference_policy='mc_command_first_grip_then_accepted_ideal_restart_on_failure')
+            reference_policy='mc_command_first_grip_then_accepted_ideal_hold_on_local_ik_failure',
+            ik_failure_policy='hold_complete_target_retry_new_input',
+            ik_recovery_duration_s=options.ik_recovery_duration)
         xr_log = XRLog(
             options.xr_output, unique_path=True,
             device_id=options.device_id, input_config=asdict(input_config),
@@ -197,6 +201,8 @@ def main(args=None):
                            pose_policy='latest_complete_frame', grip_policy='ordered_edges_hold_motion')
         receiver.start()
         print('等待XR完整帧；位姿IK上限20Hz，Grip边沿保序处理；Ctrl-C结束。', flush=True)
+        print(f'局部IK无解时保持完整目标；新目标可解后用{options.ik_recovery_duration:g}秒恢复跟踪。',
+              flush=True)
         frames = iter(live_frames(receiver, port, options))
         first_frame = initial_values = None
         if options.execute:
@@ -260,7 +266,8 @@ def main(args=None):
                           timing_provider=live_result_timing,
                           before_commit=before_live_commit,
                           on_error=port.stop if options.execute else None,
-                          commit_lock=receiver.lock, hold_motion=hold_edge_motion)
+                          commit_lock=receiver.lock, hold_motion=hold_edge_motion,
+                          ik_recovery_duration=options.ik_recovery_duration)
         if options.execute:
             port.stop()
             port.check_background()

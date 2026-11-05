@@ -142,6 +142,23 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIsNone(result['first_failure'])
         self.assertTrue(result['replay_complete'])
 
+    def test_recoverable_rejection_is_resolved_and_recovery_is_counted(self):
+        """可恢复空解允许正常结束，统计过渡进度及完成次数；历史拒绝仍按失败处理。"""
+        rows = [dict(event='xr_input', fields=dict(frame=dict(seq=1))),
+                dict(event='ik_rejected', fields=dict(input_seq=1, reason='left局部IK无解',
+                                                     recoverable=True)),
+                dict(event='ik_recovery', fields=dict(input_seq=2, phase='recovering', blend=0.)),
+                dict(event='ik_recovery', fields=dict(input_seq=3, phase='tracking', blend=1.)),
+                dict(event='exit', fields=dict(reason='completed'))]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'teleop.jsonl'
+            path.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+            result = summarize(path)
+        self.assertTrue(result['replay_complete'])
+        self.assertEqual(result['ik_recovery']['recoverable_rejections'], 1)
+        self.assertEqual(result['ik_recovery']['completed_transitions'], 1)
+        self.assertTrue(result['first_failure']['recoverable'])
+
     def test_stats_separate_new_and_previous_target_tracking_observations(self):
         """新旧目标误差分别统计；首帧和旧日志缺少前目标时不伪造观测样本。"""
         rows = [dict(event='metadata', fields=dict(execute=True)),

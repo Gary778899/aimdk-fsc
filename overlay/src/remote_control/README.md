@@ -68,6 +68,7 @@ Ctrl-C后日志可读且有exit记录；后台服务保持运行，重跑命令�
 - `mapping.py`：`MappingConfig.load(path)`加载配置；`Session.propose(frame, robot_tcp_poses, hand_openings)`生成双侧候选。
 - `Proposal.report`保存每侧Grip事件、输入／TCP增量与参考位姿；`Session.describe()`返回已提交参考及输入消费状态，供失败前后对照。
 - 双侧IK成功后预检`Session.validate_commit(proposal)`，再统一提交IK和`Session.commit(proposal)`；失败调用`reject(proposal)`。
+- 执行侧接受过渡目标时使用`Session.commit(proposal, accepted_target=过渡目标)`，仅更新保持位姿与夹爪开度，Grip参考延续本帧候选。恢复与失败处理策略见[功能包说明](../functions/README.md#ik无解保持与恢复)。
 - 每侧Grip上升沿使用调用方传入的机器人TCP建立参考；连续映射使用原参考，Grip松开保持已提交目标。
   X2的首次HAL命令参考、同会话理想目标参考及中断恢复见[功能包说明](../functions/README.md#现场只读ik与统计)。
 - 断链、已报告的跟踪失效、设备／参考空间变化或源时间回退清除参考；先观察Grip松开，再重新按下接管。

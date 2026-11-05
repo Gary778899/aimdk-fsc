@@ -1,6 +1,6 @@
 """显式坐标映射与事务式Grip会话；与机器人消息及IK实现解耦。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 from pathlib import Path
@@ -288,13 +288,19 @@ class Session:
         if proposal is not self._pending or proposal.revision != self._revision:
             raise ValueError('映射候选已失效或不属于当前会话')
 
-    def commit(self, proposal):
-        """提交已接受的双侧映射参考及保持目标，返回完整目标帧。"""
+    def commit(self, proposal, *, accepted_target=None):
+        """提交映射参考，返回目标；accepted_target可指定执行侧实际接受的过渡保持目标。
+
+        过渡目标只替换held_pose与opening，Grip参考、使能状态及世代仍来自proposal。
+        """
         self.validate_commit(proposal)
-        self._states = proposal.states
+        self._states = (proposal.states if accepted_target is None else tuple(
+            replace(state, held_pose=getattr(accepted_target, side).pose,
+                    opening=accepted_target.hand_openings[index])
+            for index, (side, state) in enumerate(zip(SIDES, proposal.states))))
         self._pending = None
         self._revision += 1
-        return proposal.target
+        return proposal.target if accepted_target is None else accepted_target
 
     def reject(self, proposal):
         """拒绝当前候选，保留先前参考及保持目标；该输入序号已消费。"""

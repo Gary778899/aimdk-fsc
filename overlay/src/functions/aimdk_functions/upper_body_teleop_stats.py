@@ -13,6 +13,7 @@ def summarize(path):
     """返回遥操日志的结果与分布；损坏记录报错，20ms只作为观测分界。"""
     inputs, accepted, rejected, errors, exits = [], [], [], [], []
     superseded, selections = [], []
+    recoveries = []
     input_errors, mapping_events, timings, backlog = [], [], {}, {}
     event_counts, mapping_ranges = {}, {}
     commands, ten_degree_observations = [], []
@@ -92,6 +93,8 @@ def summarize(path):
                             metrics[f'{side}.{key}'].append(arm[key])
                 elif event == 'ik_rejected':
                     rejected.append(fields)
+                elif event == 'ik_recovery':
+                    recoveries.append(fields)
                 elif event == 'error':
                     errors.append(fields)
                 elif event == 'exit':
@@ -119,6 +122,7 @@ def summarize(path):
     if rejected:
         first = rejected[0]
         first_failure = dict(input_seq=first['input_seq'], reason=first['reason'],
+                             recoverable=first.get('recoverable', False),
                              previous_input_seq=first.get('ik_before', {}).get('last_input_seq'),
                              ik_state_preserved=(first['ik_before'] == first['ik_after']
                                                  if 'ik_before' in first and 'ik_after' in first else None),
@@ -149,6 +153,10 @@ def summarize(path):
                                accepted_inputs_not_published=sorted(set(accepted)-published_inputs),
                                unknown_published_inputs=sorted(published_inputs-set(accepted))),
                 ten_degree_observations=ten_degree_observations,
+                ik_recovery=dict(recoverable_rejections=sum(
+                    row.get('recoverable', False) for row in rejected),
+                    transition_frames=recoveries,
+                    completed_transitions=sum(row['phase'] == 'tracking' for row in recoveries)),
                 replay_input_errors=input_errors, first_failure=first_failure,
                 mapping_candidate_events=mapping_events, mapping_candidate_event_counts=event_counts,
                 mapping_candidate_ranges={key: dict(min=min(values), max=max(values))
@@ -157,7 +165,8 @@ def summarize(path):
                 exit_reasons=exits, unresolved_inputs=missing, unknown_results=extra,
                 repeated_results=duplicates,
                 replay_complete=bool(inputs and exits and exits[-1].get('reason') == 'completed'
-                                     and not rejected and not errors and not input_errors and not missing
+                                     and all(row.get('recoverable', False) for row in rejected)
+                                     and not errors and not input_errors and not missing
                                      and not extra and duplicates == 0),
                 distributions={key: distribution(values) for key, values in metrics.items()},
                 mapping_and_ik_over_20ms=sum(v > .02 for v in metrics['mapping_and_ik_seconds']))

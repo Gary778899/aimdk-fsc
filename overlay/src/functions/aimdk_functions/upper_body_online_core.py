@@ -30,6 +30,10 @@ class OnlineIKFailure(ControlFailure):
         self.report = report
 
 
+class LocalIKUnavailable(OnlineIKFailure):
+    """局部求解器返回空解；调用方可保持完整目标并继续处理新输入。"""
+
+
 @dataclass(frozen=True)
 class ArmTrackingState:
     """单侧上一已接受的理想关节rad、SEW及解析分支。"""
@@ -196,7 +200,7 @@ class DualArmOnlineIK:
                     solution = arm.track(desired_position, desired_rotation, previous.joints,
                                          previous_psi=previous.sew, previous_branch=previous.branch)
                     if solution is None:
-                        raise ControlFailure(f'{side}局部IK无解')
+                        raise LocalIKUnavailable(f'{side}局部IK无解', report)
                     joints = finite_positions(solution.q, 7, f'{side}候选')
                     sew = float(solution.psi)
                     branch = (int(solution.elbow_branch), int(solution.shoulder_branch),
@@ -234,7 +238,8 @@ class DualArmOnlineIK:
                            reason=str(error))
             report.update(reason=str(error), calculation_seconds=time.monotonic() - began,
                           last_accepted_rad=list(self.accepted.arm_rad))
-            raise OnlineIKFailure(str(error), report) from error
+            failure_type = LocalIKUnavailable if isinstance(error, LocalIKUnavailable) else OnlineIKFailure
+            raise failure_type(str(error), report) from error
 
     def validate_commit(self, proposal):
         """检查候选所属实例与revision，供会话和IK共同提交前校验。"""
