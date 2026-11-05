@@ -14,14 +14,22 @@ if [[ "$2" == '--all' ]]; then
 fi
 
 # 删除前先检查全部根目录；拒绝将根目录符号链接作为清理入口。
+existing_roots=()
 for root in "${roots[@]}"; do
-    if [[ -L "$root" || ! -d "$root" ]]; then
-        printf '拒绝清理：目录不存在或为符号链接：%s\n' "$root" >&2
+    if [[ -L "$root" ]]; then
+        printf '拒绝清理：目录为符号链接：%s\n' "$root" >&2
+        exit 1
+    elif [[ ! -e "$root" ]]; then
+        printf '跳过：目录不存在：%s\n' "$root"
+        continue
+    elif [[ ! -d "$root" ]]; then
+        printf '拒绝清理：路径不是目录：%s\n' "$root" >&2
         exit 1
     fi
+    existing_roots+=("$root")
 done
 
-for root in "${roots[@]}"; do
+for root in "${existing_roots[@]}"; do
     printf '\n目录：%s\n' "$root"
     if [[ "$1" == '--execute' ]]; then
         # 包括隐藏文件，保留根目录，禁止跨文件系统遍历；任何删除错误均中止。

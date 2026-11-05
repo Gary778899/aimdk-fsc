@@ -4,14 +4,11 @@
         {
             "label": "机器人：下载采集数据",
             "type": "process",
-            "command": "rsync",
+            "command": "bash",
             "args": [
-                "-az",
-                "--checksum",
-                "--itemize-changes",
-                "--human-readable",
-                "--info=progress2",
-                "agi@10.0.1.41:/home/agi/aimdk-fsc/data/",
+                "-c",
+                "ssh agi@10.0.1.41 'if [ -d /home/agi/aimdk-fsc/data ]; then exit 0; elif [ ! -e /home/agi/aimdk-fsc/data ]; then exit 3; else echo \"数据路径不是目录\" >&2; exit 1; fi'\nstatus=$?\nif [ \"$status\" -eq 3 ]; then\n    printf '无数据可下载：机器人 data 目录不存在。\\n'\n    exit 0\nelif [ \"$status\" -ne 0 ]; then\n    exit \"$status\"\nfi\nexec rsync -az --checksum --itemize-changes --human-readable --info=progress2 agi@10.0.1.41:/home/agi/aimdk-fsc/data/ \"$1\"",
+                "download-data",
                 "${workspaceFolder}/data/"
             ],
             "problemMatcher": [],

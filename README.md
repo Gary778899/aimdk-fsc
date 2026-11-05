@@ -119,7 +119,7 @@ ros2 run aimdk_functions upper_body_control --help
 3. 确认各任务正常结束，核对本地会话文件和日志，必要时读回数据。
 
 `机器人：下载采集数据` 将 `agi@10.0.1.41:/home/agi/aimdk-fsc/data/` 内的内容单向下载到
-当前项目根目录的 `data/`，目录不存在时会创建。
+当前项目根目录的 `data/`，本地目录不存在时会创建；机器人端目录不存在时提示“无数据可下载”并正常结束。
 `机器人：下载日志` 将 `agi@10.0.1.41:/home/agi/aimdk-fsc/log/` 内的全部内容
 单向下载到本地 `log/`，包括双臂控制 JSONL 日志及该目录内的构建、调试和验证日志。
 下载前应等待相关程序退出、日志写盘；日志任务要求机器人源目录已存在。
@@ -134,7 +134,7 @@ ros2 run aimdk_functions upper_body_control --help
 在本地项目根目录使用下文的清理命令：先预览，核对后再添加 `--execute` 实际清理。
 
 脚本默认通过 SSH 在机器人宿主机清空 `/home/agi/aimdk-fsc/data` 和 `/home/agi/aimdk-fsc/log`
-的全部内容，包括隐藏文件，保留目录本身及权限。
+的全部内容，包括隐藏文件，保留目录本身及权限；目标目录不存在时提示并跳过。
 添加 `--all` 时清理上述两处及整个 `/home/agi/aimdk-fsc`，包括源码、`build/`、`install/`
 等内容；保留项目根目录，项目内的 `data/`、`log/` 目录也会被删除。
 绑定挂载使清理结果同时反映到容器内，无需进入、停止或删除容器。
@@ -148,8 +148,6 @@ ros2 run aimdk_functions upper_body_control --help
 如果使用了 `--all`，下次重新同步后只需运行 `bash scripts/build_overlay.sh` 构建自研包，
 再加载 underlay 和 overlay 环境运行。`/home/agi/aimdk` 不在清理范围内，厂商包无需重建；
 通常无需重新构建镜像或重新创建容器。
-全量清理会删除 `data/`、`log/`，在两者重新生成前重复运行现有清理脚本会因目录不存在而拒绝执行，
-本轮保留这一既有检查行为。
 
 连接地址变更时，同时更新 `.vscode/tasks.json` 和 `scripts/robot_cleanup.py`。
 
