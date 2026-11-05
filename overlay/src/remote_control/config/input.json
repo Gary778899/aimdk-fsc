@@ -1,0 +1,8 @@
+{
+  "quaternion_order": "xyzw",
+  "position_scale_m": 1.0,
+  "reference_space_id": "pico-session-001",
+  "validity_field": null,
+  "valid_values": [],
+  "reference_space_field": null
+}

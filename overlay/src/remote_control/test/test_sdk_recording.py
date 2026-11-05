@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from remote_control.cli import Recorder
+from remote_control.frames import XRFrame
 from remote_control.protocol import InputConfig, parse_tracking
 from remote_control.recording import XRLog, read_frames, summarize
 from remote_control.sdk import DEVICE_STATE_JSON, DeviceStateJson, SDKEvent, SDKSource
@@ -36,6 +37,24 @@ def tracking_event(seq=1, device_id='selected', received=1., **controller_overri
 
 class SDKRecordingTests(unittest.TestCase):
     """核对跨线程边界复制及故障记录，不调用外部动态库。"""
+
+    def test_head_same_callback_and_roundtrip_preserve_raw_status(self):
+        """Head与双手从同一回调解析，位置按配置缩放，status原样写入并读回。"""
+        event = tracking_event()
+        outer = json.loads(event.payload())
+        inner = json.loads(outer['value'])
+        inner['Head'] = dict(pose='7,8,9,0,0,0,1', status=3)
+        outer['value'] = json.dumps(inner)
+        event = replace(event, payload_base64=base64.b64encode(json.dumps(outer).encode()).decode())
+        frame = parse_tracking(event, 1, input_config(position_scale_m=.01))
+        self.assertEqual(frame.head.position_m, (.07, .08, .09))
+        self.assertEqual(frame.head_status, 3)
+        self.assertEqual(frame.left.pose.position_m, (.01, .02, .03))
+        self.assertEqual(XRFrame.from_dict(frame.to_dict()), frame)
+        legacy = frame.to_dict()
+        del legacy['head']
+        del legacy['head_status']
+        self.assertIsNone(XRFrame.from_dict(legacy).head)
 
     def test_failed_shutdown_retains_callback_owner(self):
         """SDK未确认终止时保持强引用，禁止第二实例覆盖仍可能使用的回调。"""
@@ -142,7 +161,7 @@ class SDKRecordingTests(unittest.TestCase):
             reader = read_frames(path)
             self.assertEqual(next(reader).source_time_ns, 100)
             self.assertIsNone(next(reader).source_time_ns)
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, r'xr.jsonl:4: XR帧seq=3: XR源时间回退'):
                 next(reader)
             report = summarize(path)
             self.assertEqual(report['reversed_source_time'], 1)

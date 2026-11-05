@@ -1,14 +1,87 @@
 """固定设备的只读常驻监听，复用录制器保存原始回调和标准XR帧。"""
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
+import os
 from pathlib import Path
+import signal
+import socket
+import subprocess
 import time
 from uuid import uuid4
 
 from .cli import run_recording
+from .protocol import InputConfig
+
+
+def service_listening():
+    """检查SDK使用的本机TCP端口是否可连接；实际服务连接仍由SDK回调确认。"""
+    try:
+        with socket.create_connection(('127.0.0.1', 60061), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
+@contextmanager
+def watch_service(script, log_path, timeout):
+    """复用已监听端口的服务，或启动脚本并兼容厂商转后台的行为。
+
+    script为厂商启动脚本，log_path接收服务输出，timeout为启动等待秒数。
+    脚本非零退出或端口等待超时抛出RuntimeError；零退出后继续等待端口。
+    结束时清理仍在前台运行的启动进程组，已转后台或复用的服务保持运行。
+    """
+    if service_listening():
+        print('本机60061端口已监听，复用现有服务；连接状态以SDK回调为准。', flush=True)
+        yield
+        return
+    process = None
+    log_path = Path(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open('w', encoding='utf-8') as output:
+        try:
+            script = Path(script).resolve()
+            if not script.is_file():
+                raise FileNotFoundError(f'未找到Service启动脚本：{script}')
+            process = subprocess.Popen(['bash', str(script)], cwd=script.parent,
+                                       stdin=subprocess.DEVNULL, stdout=output,
+                                       stderr=subprocess.STDOUT, start_new_session=True)
+            print(f'启动XRoboToolkit Service；服务日志：{log_path}', flush=True)
+            deadline = time.monotonic() + timeout
+            launcher_returned = False
+            while True:
+                code = process.poll()
+                if code is not None and code != 0:
+                    raise RuntimeError(f'Service启动脚本退出，code={code}；查看{log_path}')
+                if code == 0 and not launcher_returned:
+                    print('Service启动脚本已返回0，继续等待后台服务监听端口。', flush=True)
+                    launcher_returned = True
+                if service_listening():
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f'Service在{timeout:g}秒内未监听60061端口；查看{log_path}')
+                time.sleep(0.1)
+            yield
+        finally:
+            if process is not None and process.poll() == 0:
+                print('Service启动脚本已退出；后台服务保持运行，下次启动将检查端口并复用。', flush=True)
+            elif process is not None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+                print('本次Service启动进程组已清理。', flush=True)
 
 
 class WatchStatus:
@@ -96,28 +169,42 @@ def watch_parser():
     """定义已确认机器人部署的默认路径；允许显式覆盖设备、库、配置和日志目录。"""
     parser = argparse.ArgumentParser(description='常驻等待PICO，显示输入并保存XR JSONL日志')
     parser.add_argument('--device-id', default='TestDevice', help='固定设备标识，默认TestDevice')
-    parser.add_argument('--input-config', default='/home/agi/aimdk-fsc/data/pico_config/input.json',
+    parser.add_argument('--input-config', default='/home/agi/aimdk-fsc/src/remote_control/config/input.json',
                         help='已核对的输入协议配置')
     parser.add_argument('--sdk-library',
                         default='/opt/apps/roboticsservice/SDK/arm64/libPXREARobotSDK.so',
                         help='SDK动态库，默认使用已安装ARM64服务随包库')
     parser.add_argument('--log-dir', default='/home/agi/aimdk-fsc/log', help='自动命名日志所在目录')
+    parser.add_argument('--service-script', default='/opt/apps/roboticsservice/runService.sh',
+                        help='本机服务未监听时调用的启动脚本')
+    parser.add_argument('--service-start-timeout', type=float, default=15.0,
+                        help='等待服务监听端口的秒数，默认15')
     parser.add_argument('--display-interval', type=float, default=1.0, help='终端显示间隔秒，默认1')
-    parser.add_argument('--duration', type=float, help='监听总秒数，含等待；省略时持续至Ctrl-C')
+    parser.add_argument('--duration', type=float, help='服务就绪后的监听秒数，含等待头显；省略时持续至Ctrl-C')
     return parser
 
 
 def watch_main(args=None):
-    """启动常驻录制及状态显示；配置错误返回1，其他退出码与xr_record一致。"""
+    """自动启动或复用服务后监听；失败返回1，中断返回130，后台服务保持运行。"""
     options = watch_parser().parse_args(args)
     try:
         observer = WatchStatus(options.device_id, options.display_interval)
-    except ValueError as error:
+        if not math.isfinite(options.service_start_timeout) or options.service_start_timeout <= 0:
+            raise ValueError('--service-start-timeout须为有限正秒数')
+        if options.duration is not None and (not math.isfinite(options.duration) or options.duration <= 0):
+            raise ValueError('--duration须为有限正秒数')
+        InputConfig.load(options.input_config)
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
+        stem = Path(options.log_dir) / f'xr_watch_{stamp}_{uuid4().hex[:8]}'
+        options.output = str(stem.with_suffix('.jsonl'))
+        with watch_service(options.service_script, stem.with_suffix('.service.log'),
+                           options.service_start_timeout):
+            return run_recording(options, observer=observer)
+    except KeyboardInterrupt:
+        return 130
+    except (OSError, ValueError, TypeError, RuntimeError) as error:
         print(f'XR监听失败：{error}', flush=True)
         return 1
-    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
-    options.output = str(Path(options.log_dir) / f'xr_watch_{stamp}_{uuid4().hex[:8]}.jsonl')
-    return run_recording(options, observer=observer)
 
 
 if __name__ == '__main__':

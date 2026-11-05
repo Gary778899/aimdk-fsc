@@ -10,7 +10,9 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/remote_control']),
         ('share/remote_control', ['package.xml']),
-        ('share/remote_control/config', ['config/mapping.example.json', 'config/input.example.json']),
+        ('share/remote_control/config', [
+            'config/mapping.example.json', 'config/mapping.json',
+            'config/input.example.json', 'config/input.json']),
     ],
     install_requires=['setuptools', 'numpy>=1.21'],
     zip_safe=False,

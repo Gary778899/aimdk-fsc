@@ -4,6 +4,7 @@ from argparse import Namespace
 import base64
 from dataclasses import replace
 import json
+import signal
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,7 +14,83 @@ from remote_control.cli import run_recording
 from remote_control.protocol import InputConfig, parse_tracking
 from remote_control.recording import read_records, summarize
 from remote_control.sdk import DEVICE_STATE_JSON, SDKEvent
-from remote_control.watch import WatchStatus
+from remote_control.watch import WatchStatus, watch_service
+
+
+class ServiceTests(unittest.TestCase):
+    """用模拟进程检查服务复用、自启和异常清理，供机器人容器执行。"""
+
+    def test_existing_service_is_left_running(self):
+        """已有监听端口时不创建进程或服务日志，退出不终止现有服务。"""
+        with patch('remote_control.watch.service_listening', return_value=True), \
+                patch('remote_control.watch.subprocess.Popen') as launch, \
+                patch('remote_control.watch.os.killpg') as stop:
+            with watch_service('/unused.sh', '/unused.log', 15):
+                pass
+        launch.assert_not_called()
+        stop.assert_not_called()
+
+    def test_started_service_is_cleaned_after_recording_error(self):
+        """录制体异常时仍向本次脚本及服务所在进程组发送终止信号。"""
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'runService.sh'
+            script.write_text('#!/bin/bash\n./RoboticsServiceProc\n')
+            process = Mock(pid=123, poll=Mock(return_value=None))
+            with patch('remote_control.watch.service_listening', side_effect=[False, True]), \
+                    patch('remote_control.watch.subprocess.Popen', return_value=process) as launch, \
+                    patch('remote_control.watch.os.killpg') as stop:
+                with self.assertRaisesRegex(RuntimeError, 'recording failed'):
+                    with watch_service(script, Path(directory) / 'service.log', 15):
+                        raise RuntimeError('recording failed')
+            self.assertEqual(launch.call_args.args[0], ['bash', str(script)])
+            self.assertTrue(launch.call_args.kwargs['start_new_session'])
+            stop.assert_called_once_with(123, signal.SIGTERM)
+            process.wait.assert_called_once_with(timeout=5)
+
+    def test_start_timeout_cleans_service(self):
+        """启动超时须报告失败并清理已创建的进程，不进入录制体。"""
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'runService.sh'
+            script.touch()
+            process = Mock(pid=123, poll=Mock(return_value=None))
+            with patch('remote_control.watch.service_listening', return_value=False), \
+                    patch('remote_control.watch.subprocess.Popen', return_value=process), \
+                    patch('remote_control.watch.time.monotonic', side_effect=[0, 16]), \
+                    patch('remote_control.watch.os.killpg') as stop:
+                with self.assertRaisesRegex(RuntimeError, '未监听60061'):
+                    with watch_service(script, Path(directory) / 'service.log', 15):
+                        self.fail('启动超时后不得进入录制')
+            stop.assert_called_once_with(123, signal.SIGTERM)
+            process.wait.assert_called_once_with(timeout=5)
+
+    def test_zero_exit_waits_for_background_listener(self):
+        """启动脚本零退出后后台服务延迟监听，须继续等待并保留后台服务。"""
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'runService.sh'
+            script.touch()
+            process = Mock(pid=123, poll=Mock(return_value=0))
+            with patch('remote_control.watch.service_listening', side_effect=[False, False, True]), \
+                    patch('remote_control.watch.subprocess.Popen', return_value=process), \
+                    patch('remote_control.watch.time.sleep'), \
+                    patch('remote_control.watch.os.killpg') as stop:
+                with watch_service(script, Path(directory) / 'service.log', 15):
+                    pass
+            stop.assert_not_called()
+
+    def test_zero_exit_without_listener_still_times_out(self):
+        """脚本返回0但端口始终未监听时仍失败，不把零退出码当作服务就绪。"""
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'runService.sh'
+            script.touch()
+            process = Mock(pid=123, poll=Mock(return_value=0))
+            with patch('remote_control.watch.service_listening', return_value=False), \
+                    patch('remote_control.watch.subprocess.Popen', return_value=process), \
+                    patch('remote_control.watch.time.monotonic', side_effect=[0, 16]), \
+                    patch('remote_control.watch.os.killpg') as stop:
+                with self.assertRaisesRegex(RuntimeError, '未监听60061'):
+                    with watch_service(script, Path(directory) / 'service.log', 15):
+                        self.fail('端口未监听时不得进入录制')
+            stop.assert_not_called()
 
 
 def tracking_event(seq=1, received=1.0):

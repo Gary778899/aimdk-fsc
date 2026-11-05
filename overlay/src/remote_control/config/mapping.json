@@ -1,0 +1,15 @@
+{
+  "basis": [
+    [0, 0, -1],
+    [-1, 0, 0],
+    [0, 1, 0]
+  ],
+  "translation_scale": 1.0,
+  "rotation_mode": "relative",
+  "grip_threshold": 0.9,
+  "gripper_mode": "trigger",
+  "trigger_openings": [1.0, 0.0],
+  "unknown_tracking": "allow",
+  "base_frame": "torso_link",
+  "reference_mode": "grip_head_yaw"
+}

@@ -110,6 +110,8 @@ class XRFrame:
     connected: bool = True
     reference_space_id: object = None
     device_id: str = ''
+    head: object = None
+    head_status: object = None
 
     def __post_init__(self):
         """固定元数据并校验完整双手快照；源时间允许显式未知。"""
@@ -126,6 +128,8 @@ class XRFrame:
             raise ValueError('reference_space_id须为字符串或None')
         if not isinstance(self.device_id, str):
             raise ValueError('device_id须为字符串')
+        if self.head is not None and not isinstance(self.head, Pose):
+            raise ValueError('head须为Pose或None')
 
     def to_dict(self):
         """返回标准XR日志记录，完整保留源端与接收时间。"""
@@ -133,14 +137,18 @@ class XRFrame:
                     received_monotonic_s=self.received_monotonic_s,
                     left=self.left.to_dict(), right=self.right.to_dict(),
                     connected=self.connected, reference_space_id=self.reference_space_id,
-                    device_id=self.device_id)
+                    device_id=self.device_id,
+                    head=self.head.to_dict() if self.head is not None else None,
+                    head_status=self.head_status)
 
     @classmethod
     def from_dict(cls, value):
         """读回标准XR帧；不推断缺失的连接状态或时间字段。"""
         return cls(value['seq'], value['source_time_ns'], value['received_monotonic_s'],
                    Controller.from_dict(value['left']), Controller.from_dict(value['right']),
-                   value['connected'], value.get('reference_space_id'), value.get('device_id', ''))
+                   value['connected'], value.get('reference_space_id'), value.get('device_id', ''),
+                   Pose.from_dict(value['head']) if value.get('head') is not None else None,
+                   value.get('head_status'))
 
 
 @dataclass(frozen=True)

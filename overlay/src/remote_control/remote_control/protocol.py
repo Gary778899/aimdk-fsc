@@ -56,18 +56,23 @@ def _number(value, label):
     return float(value)
 
 
-def _controller(value, config):
-    """从单侧原始对象构造控制器；位置单位和四元数顺序使用显式配置。"""
-    if not isinstance(value, dict):
-        raise ValueError('Controller.left/right须为对象')
+def _pose(value, config):
+    """解析Head或Controller的七分量pose，按配置返回m和旋转矩阵。"""
     raw_pose = value['pose']
     if isinstance(raw_pose, str):
         raw_pose = [float(item) for item in raw_pose.split(',')]
     if not isinstance(raw_pose, (list, tuple)) or len(raw_pose) != 7:
-        raise ValueError('手柄pose须包含3位置和4四元数分量')
-    pose_values = tuple(_number(item, '手柄pose') for item in raw_pose)
-    pose = Pose(tuple(item * config.position_scale_m for item in pose_values[:3]),
+        raise ValueError('pose须包含3位置和4四元数分量')
+    pose_values = tuple(_number(item, 'pose') for item in raw_pose)
+    return Pose(tuple(item * config.position_scale_m for item in pose_values[:3]),
                 quaternion_matrix(pose_values[3:], config.quaternion_order))
+
+
+def _controller(value, config):
+    """从单侧原始对象构造控制器；位置单位和四元数顺序使用显式配置。"""
+    if not isinstance(value, dict):
+        raise ValueError('Controller.left/right须为对象')
+    pose = _pose(value, config)
     buttons = []
     for name in ('menuButton', 'primaryButton', 'secondaryButton', 'axisClick'):
         if name in value:
@@ -127,4 +132,6 @@ def parse_tracking(event, seq, config):
                    received_monotonic_s=event.received_monotonic_s,
                    left=_controller(controllers['left'], config),
                    right=_controller(controllers['right'], config),
-                   connected=True, reference_space_id=reference, device_id=event.device_id)
+                   connected=True, reference_space_id=reference, device_id=event.device_id,
+                   head=_pose(value['Head'], config) if 'Head' in value else None,
+                   head_status=value['Head'].get('status') if 'Head' in value else None)

@@ -14,11 +14,25 @@ SCHEMA = 'remote_control.xr.v1'
 class XRLog:
     """独占创建JSONL文件，逐事件flush保留原始回调和归一化帧。"""
 
-    def __init__(self, path, **metadata):
-        """创建显式path并记录元数据；已有文件或写入失败直接报错。"""
+    def __init__(self, path, *, unique_path=False, **metadata):
+        """创建path并记录元数据；unique_path启用重名编号，其他写入异常直接传播。
+
+        默认拒绝已有文件；启用后依次尝试文件名_1、文件名_2，保留原扩展名。
+        实际创建路径保存在self.path，所有候选均以独占模式创建。
+        """
         self.path = Path(path).expanduser().resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.stream = self.path.open('x', encoding='utf-8')
+        requested = self.path
+        index = 0
+        while True:
+            try:
+                self.stream = self.path.open('x', encoding='utf-8')
+                break
+            except FileExistsError:
+                if not unique_path:
+                    raise
+                index += 1
+                self.path = requested.with_name(f'{requested.stem}_{index}{requested.suffix}')
         try:
             self.record('metadata', **metadata)
         except Exception:
@@ -64,19 +78,24 @@ def read_frames(path):
     """
     previous = None
     last_known_source = None
-    for record in read_records(path):
-        if record['event'] in ('error', 'session_invalidated'):
-            raise ValueError(f"XR记录包含{record['event']}：{record['fields']}")
-        if record['event'] != 'xr_frame':
-            continue
-        frame = XRFrame.from_dict(record['fields']['frame'])
-        if previous is not None:
-            if frame.seq <= previous.seq or frame.received_monotonic_s <= previous.received_monotonic_s:
-                raise ValueError('XR输入序号或接收时间未推进')
-        if frame.source_time_ns is not None:
-            if last_known_source is not None and frame.source_time_ns < last_known_source:
-                raise ValueError('XR源时间回退')
-            last_known_source = frame.source_time_ns
+    for line_number, record in enumerate(read_records(path), 1):
+        raw_frame = record['fields'].get('frame')
+        sequence = raw_frame.get('seq') if isinstance(raw_frame, dict) else None
+        try:
+            if record['event'] in ('error', 'session_invalidated'):
+                raise ValueError(f"XR记录包含{record['event']}：{record['fields']}")
+            if record['event'] != 'xr_frame':
+                continue
+            frame = XRFrame.from_dict(raw_frame)
+            if previous is not None:
+                if frame.seq <= previous.seq or frame.received_monotonic_s <= previous.received_monotonic_s:
+                    raise ValueError('XR输入序号或接收时间未推进')
+            if frame.source_time_ns is not None:
+                if last_known_source is not None and frame.source_time_ns < last_known_source:
+                    raise ValueError('XR源时间回退')
+                last_known_source = frame.source_time_ns
+        except (ValueError, TypeError, KeyError) as error:
+            raise ValueError(f'{path}:{line_number}: XR帧seq={sequence}: {error}') from error
         previous = frame
         yield frame
 

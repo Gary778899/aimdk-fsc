@@ -12,19 +12,14 @@ ABI依据：[PXREARobotSDK.h](https://github.com/XR-Robotics/XRoboToolkit-PC-Ser
 
 ## 输入配置
 
-复制`config/input.example.json`并填写协议约定，由`--input-config`指定。
-以下为待现场核对的格式示例：
+当前只读接入使用[config/input.json](config/input.json)，固定2026-11-02录制日志中的配置：
+`quaternion_order=xyzw`、`position_scale_m=1.0`、`reference_space_id=pico-session-001`，
+`validity_field`和`reference_space_field`为null，`valid_values`为空数组。
+依据为`log/pico_input_001.jsonl`及同日两次`xr_watch`日志的metadata；实际轴向、距离与旋转方向仍待现场核对。
 
-```json
-{
-  "quaternion_order": "xyzw",
-  "position_scale_m": 1.0,
-  "reference_space_id": "recording-session-1",
-  "validity_field": null,
-  "valid_values": [],
-  "reference_space_field": null
-}
-```
+`xr_watch`默认读取同步后的源码配置，路径见[常驻输入测试](README.md#常驻输入测试)。
+`setup.py`同时将配置安装到`share/remote_control/config/`。
+其他输入约定可复制`config/input.example.json`填写，并用`--input-config`指定；`xr_record`始终显式指定该参数。
 
 - `quaternion_order`：原始四元数顺序，xyzw或wxyz；位置缩放由`position_scale_m`转换为m。
 - `validity_field`／`valid_values`：单侧Controller对象的跟踪状态字段及有效值，字段缺失或配置null时保留未知。
@@ -32,6 +27,13 @@ ABI依据：[PXREARobotSDK.h](https://github.com/XR-Robotics/XRoboToolkit-PC-Ser
   无上游重定位标识时，应用重定位后结束录制，以新reference_space_id重新录制。
 
 ## 命令与日志
+
+2026-11-03的`log/xr_watch_20261103T124408_094273Z_f22b0cb9.jsonl`中，1764条Tracking回调
+均包含`Head`及`Controller.left/right`，共享该回调的`timeStampNs`和本机接收时刻。
+`Head.pose`为逗号分隔的3位置及4四元数，与手柄共用`position_scale_m`和`quaternion_order`配置。
+`XRFrame.head`保存解析位姿，`head_status`原样保存`Head.status`；本次值为3，其有效性含义未核实，不用作门槛。
+未开启Head时两字段为null；历史归一化帧缺少两字段时读回为null，维持`remote_control.xr.v1`可选字段扩展。
+同一回调表示软件快照关联，头部与手柄的物理坐标一致性及朝向映射仍由现场验证。
 
 常驻等待、实时状态显示及自动命名日志使用[xr_watch](README.md#常驻输入测试)。
 下面的`xr_record`用于显式设备和输出路径的录制。

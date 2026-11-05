@@ -6,5 +6,6 @@
   "gripper_mode": null,
   "trigger_openings": null,
   "unknown_tracking": null,
-  "base_frame": "torso_link"
+  "base_frame": "torso_link",
+  "reference_mode": "world"
 }

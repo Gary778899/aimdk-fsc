@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,7 @@ class MappingConfig:
     trigger_openings: tuple
     unknown_tracking: str
     base_frame: str
+    reference_mode: str = 'world'
 
     def __post_init__(self):
         """校验反射基、位移比例、Grip与夹爪策略，配置错误抛出ValueError。"""
@@ -53,13 +55,16 @@ class MappingConfig:
             raise ValueError('unknown_tracking须显式指定reject或allow')
         if not isinstance(self.base_frame, str) or not self.base_frame:
             raise ValueError('base_frame须为非空字符串')
+        if self.reference_mode not in ('world', 'grip_head_yaw'):
+            raise ValueError('reference_mode须为world或grip_head_yaw')
 
     @classmethod
     def from_dict(cls, value):
         """读取全部显式配置字段；缺字段抛出KeyError，非法值抛出ValueError。"""
         return cls(*(value[key] for key in (
             'basis', 'translation_scale', 'rotation_mode', 'grip_threshold',
-            'gripper_mode', 'trigger_openings', 'unknown_tracking', 'base_frame')))
+            'gripper_mode', 'trigger_openings', 'unknown_tracking', 'base_frame')),
+                   reference_mode=value.get('reference_mode', 'world'))
 
     @classmethod
     def load(cls, path):
@@ -77,6 +82,8 @@ class _SideState:
     opening: object = None
     pressed: bool = False
     grip_generation: int = -1
+    mapping_basis: object = None
+    head_yaw_rad: object = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +93,7 @@ class Proposal:
     target: TargetFrame
     revision: int
     states: tuple
+    report: dict
 
 
 class Session:
@@ -117,8 +125,29 @@ class Session:
         self._revision += 1
         self.reset_reason = str(reason)
 
-    def _observe(self, frame):
-        """消费输入序号并检查连接、时间及参考空间，异常重置后抛出InputUnavailable。"""
+    def describe(self):
+        """返回已提交参考和输入消费状态供诊断；不暴露可修改的会话对象。"""
+        sides = {}
+        for index, side in enumerate(SIDES):
+            state = self._states[index]
+            sides[side] = dict(
+                pressed=state.pressed,
+                controller_reference=(state.controller_reference.to_dict()
+                                      if state.controller_reference is not None else None),
+                robot_reference=(state.robot_reference.to_dict()
+                                 if state.robot_reference is not None else None),
+                held_pose=state.held_pose.to_dict() if state.held_pose is not None else None,
+                opening=state.opening, grip_generation=state.grip_generation,
+                mapping_basis=state.mapping_basis, head_yaw_rad=state.head_yaw_rad)
+        return dict(revision=self._revision, last_consumed_seq=self._last_seq,
+                    pending=self._pending is not None, reset_reason=self.reset_reason,
+                    observed_blocked=dict(zip(SIDES, self._blocked)), sides=sides)
+
+    def observe_input(self, frame):
+        """消费输入序号并校验连接、时间与参考空间；异常重置并抛出InputUnavailable。
+
+        连续接收器可使用独立Session逐帧校验，不创建映射候选或修改Grip参考。
+        """
         if not isinstance(frame, XRFrame):
             raise ValueError('输入须为XRFrame')
         if self._pending is not None:
@@ -130,6 +159,8 @@ class Session:
         reason = None
         if not frame.connected:
             reason = 'XR连接中断'
+        elif self.config.reference_mode == 'grip_head_yaw' and frame.head is None:
+            reason = 'grip_head_yaw需要同帧Head位姿，请开启Head tracking'
         elif self._identity is not None and identity != self._identity:
             reason = 'XR设备或参考空间改变'
         elif (self._source_time is not None and frame.source_time_ns is not None
@@ -153,17 +184,18 @@ class Session:
             self.reset(reason)
             raise InputUnavailable(reason)
 
-    def propose(self, frame, robot_tcp_poses, hand_openings):
+    def propose(self, frame, robot_tcp_poses, hand_openings, *, hold_motion=False):
         """映射一帧并返回候选，robot_tcp_poses为两侧参考Pose，hand_openings为保持开度。
 
         初次或Grip上升沿使用传入机器人参考；调用方可按侧选择实际FK或最后已接受目标FK。
+        hold_motion为True时仅更新Grip参考和保持状态，双侧位姿与夹爪保持已接受值。
         任一输入异常抛出ValueError，提交前不修改参考和保持目标。
         """
-        self._observe(frame)
+        self.observe_input(frame)
         if len(hand_openings) != 2:
             raise ValueError('hand_openings须包含左右两侧开度')
         basis = np.asarray(self.config.basis)
-        goals, states, openings = {}, [], []
+        goals, states, openings, report = {}, [], [], {}
         for index, side in enumerate(SIDES):
             robot_pose = robot_tcp_poses[side]
             if not isinstance(robot_pose, Pose):
@@ -179,31 +211,75 @@ class Session:
             self._observed_pressed[index] = pressed
             active = pressed and not self._blocked[index]
             opening = state.opening if state.opening is not None else fallback_opening
-            pose = state.held_pose or robot_pose
+            pose = robot_pose if hold_motion else (state.held_pose or robot_pose)
             reference, robot_reference = state.controller_reference, state.robot_reference
+            mapping_basis, head_yaw = state.mapping_basis, state.head_yaw_rad
+            established = False
+            input_translation = input_rotation = tcp_translation = tcp_rotation = None
             if active:
                 if not state.pressed or state.grip_generation != self._grip_generation[index]:
                     reference, robot_reference = controller.pose, robot_pose
-                position = (np.asarray(robot_reference.position_m) + self.config.translation_scale
-                            * basis @ (np.asarray(controller.pose.position_m)
-                                       - np.asarray(reference.position_m)))
+                    mapping_basis = basis
+                    head_yaw = None
+                    if self.config.reference_mode == 'grip_head_yaw':
+                        head_rotation = basis @ np.asarray(frame.head.rotation_matrix) @ basis.T
+                        forward = head_rotation[:2, 0]
+                        if np.linalg.norm(forward) <= np.finfo(float).eps:
+                            raise InputUnavailable('头显前向水平投影为零，无法建立Grip朝向')
+                        head_yaw = math.atan2(forward[1], forward[0])
+                        c, s = math.cos(head_yaw), math.sin(head_yaw)
+                        yaw_inverse = np.array(((c, s, 0.), (-s, c, 0.), (0., 0., 1.)))
+                        mapping_basis = yaw_inverse @ basis
+                    mapping_basis = immutable_matrix(mapping_basis, reflection=True)
+                    established = True
+                active_basis = np.asarray(mapping_basis)
+                input_translation = (np.asarray(controller.pose.position_m)
+                                     - np.asarray(reference.position_m))
+                input_rotation = (np.asarray(controller.pose.rotation_matrix)
+                                  @ np.asarray(reference.rotation_matrix).T)
+                tcp_translation = self.config.translation_scale * active_basis @ input_translation
+                position = np.asarray(robot_reference.position_m) + tcp_translation
                 rotation = np.asarray(robot_reference.rotation_matrix)
+                tcp_rotation = np.eye(3)
                 if self.config.rotation_mode == 'relative':
-                    delta = (np.asarray(controller.pose.rotation_matrix)
-                             @ np.asarray(reference.rotation_matrix).T)
-                    rotation = basis @ delta @ basis.T @ rotation
-                pose = Pose(position, rotation)
-                if self.config.gripper_mode == 'trigger':
+                    tcp_rotation = active_basis @ input_rotation @ active_basis.T
+                    rotation = tcp_rotation @ rotation
+                if not hold_motion:
+                    pose = Pose(position, rotation)
+                elif established:
+                    pose = robot_pose
+                if hold_motion:
+                    tcp_translation = (np.asarray(pose.position_m)
+                                       - np.asarray(robot_reference.position_m))
+                    tcp_rotation = (np.asarray(pose.rotation_matrix)
+                                    @ np.asarray(robot_reference.rotation_matrix).T)
+                if self.config.gripper_mode == 'trigger' and not hold_motion:
                     zero, one = self.config.trigger_openings
                     opening = zero + controller.trigger * (one - zero)
+            report[side] = dict(
+                event=('reference_established' if established else 'tracking' if active
+                       else 'released' if state.pressed and not pressed
+                       else 'blocked' if pressed else 'holding'),
+                enabled=active, hold_motion=hold_motion, grip=controller.grip, trigger=controller.trigger,
+                controller_reference=reference.to_dict() if active else None,
+                robot_reference=robot_reference.to_dict() if active else None,
+                reference_mode=self.config.reference_mode,
+                mapping_basis=mapping_basis if active else None,
+                head_yaw_rad=head_yaw if active else None,
+                input_translation_m=input_translation.tolist() if active else None,
+                input_rotation_matrix=input_rotation.tolist() if active else None,
+                tcp_translation_m=tcp_translation.tolist() if active else None,
+                tcp_rotation_matrix=tcp_rotation.tolist() if active else None,
+                target_pose=pose.to_dict(), hand_opening=opening)
             goals[side] = TCPGoal(pose, active)
             openings.append(opening)
             states.append(_SideState(reference if active else None,
                                      robot_reference if active else None,
-                                     pose, opening, active, self._grip_generation[index]))
+                                     pose, opening, active, self._grip_generation[index],
+                                     mapping_basis if active else None, head_yaw if active else None))
         target = TargetFrame(frame.seq, frame.source_time_ns, frame.received_monotonic_s,
                              goals['left'], goals['right'], tuple(openings), self.config.base_frame)
-        proposal = Proposal(target, self._revision, tuple(states))
+        proposal = Proposal(target, self._revision, tuple(states), report)
         self._pending = proposal
         return proposal
 
