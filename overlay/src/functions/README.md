@@ -4,7 +4,8 @@
 ROS 2 包名为 `aimdk_functions`，使用 `ament_python`，依赖 NumPy >=1.21。
 
 运动统一入口为 `upper_body_control joint/tcp/gripper`。保留 `volume_control`、
-`arm_compensation_probe` 和 `upper_body_kinematics_check` 独立工具。
+`arm_compensation_probe` 和 `upper_body_kinematics_check` 独立工具；
+`upper_body_home` 提供home位置录制与回位。
 整合后的统一入口已由用户完成机器人端验证；覆盖范围见[启动保持调查](../../../docs/archive/upper_body_startup_hold_investigation_20261030.md)。
 本轮冗余模块整理仅完成本地静态、语法检查，需同步后重新构建并验证。
 历史命令、参数和实机结果见[整理前说明](../../../docs/archive/upper_body_commands_before_unification_20261030.md)
@@ -84,6 +85,59 @@ ros2 run aimdk_functions upper_body_control joint --side both \
 比较启动前后`feedback`中的`arm`实际位置及`arm_command`完整字段，记录现场是否下沉。
 再由操作者恢复相同初始条件，用`--arm-start-source state`重复对照。
 零增量衔接验证后，再验证小幅joint/TCP动作及补偿开启行为。
+
+## Home位置录制与回位
+
+`upper_body_home record` 在操作者切换至URS／RUNNING、尚未开始遥操时，
+采样MC的HAL双臂位置命令与左右夹爪实际开度，写入JSON配置。
+录制为只读操作，重复录制覆盖指定配置；录制期间应停止其他上肢命令发布者。
+录制配置与执行入口已在机器人端使用；跟踪误差观测策略修改仅完成本地静态、语法检查，待机器人复验。
+
+同步并构建`aimdk_functions`、加载环境后，在机器人容器工作区根目录执行：
+
+```bash
+cd /home/agi/aimdk-fsc
+# 手动从SD切换至URS，等待RUNNING，保持预期home姿态后录制。
+ros2 run aimdk_functions upper_body_home record
+
+# Ctrl-C结束upper_body_teleop_observe --execute，再查看回位起点、目标和夹爪开度。
+ros2 run aimdk_functions upper_body_home run
+
+# 确认回位空间后执行；示例用5秒，可增加时长降低运动速度。
+ros2 run aimdk_functions upper_body_home run --duration 5 --execute
+```
+
+配置默认是**当前工作目录**下的`data/home.json`；可用`--config /绝对路径/home.json`
+选择其他文件。机器人工作区`data/`受现有同步排除保护，使用“机器人：下载采集数据”任务下载备份。
+避免将机器人录制配置写入受`rsync --delete`管理的源码目录。
+日志沿用工作区`log/`，可用`--log-dir`指定。
+
+JSON格式版本为`schema_version=1`，记录`robot_model=x2-ultra`、`urdf_version=v1.3.0`、
+`arm_unit=rad`；`arm_positions`按完整14关节名称保存位置，读取时按名称映射；
+`hand_openings.left/right`为0..1开度，0闭合、1全开。
+`recording`保存模式、输入话题、各流源时间及单调接收时间、实际双臂反馈和日志路径；
+`recorded_at_utc`保存录制时间。各流独立采样，不声明硬件同步。
+
+回位从当前HAL双臂位置命令和夹爪实际开度起步，双臂和夹爪共用起终点速度、加速度为零的
+五次插值，默认5秒，`--duration`接受有限正秒数。额外位置补偿固定关闭。
+本命令使用绝对14关节目标，允许超过`joint`入口的单关节±10°增量实验范围；
+双臂起终点和发送目标沿用现有关节执行限位，不裁剪目标。
+发布与完成判定复用现有执行器：50Hz原生上肢命令，运动期间跟踪误差仅记录，
+双臂终点要求处于±5°范围并持续确认0.3秒、额外等待最多2秒。
+`motion_begin.tracking_policy=observation_only`标识home策略；每条`command_published`
+记录实际关节位置、相对本次发送目标的`tracking_error_rad`、超5°观测标记及所用反馈序号与时间。
+其他单次动作继续沿用±5°跟踪中止门槛。
+夹爪只发送插值开度并记录终点反馈，不判定夹爪到位。
+启动等待`--timeout`默认5秒、范围1..10秒；`--feedback-timeout`默认0.5秒、范围0.2..1秒。
+异常和中断沿用既有停发与错误锁存，模式由操作者切换。
+`xr_watch`仅接收输入，可保持运行；执行home前需结束持续发布保持目标的遥操执行进程，松开Grip仍会发布。
+
+回位轨迹为关节空间插值，执行前检查双臂与身体、环境的中间路径，并确认夹爪改变开度时的物体状态。
+首次机器人验证：空爪录制、核对JSON与同次日志中的采样值；只读预览应无命令发布；
+在小幅偏离home后显式执行，核对首帧等于当前采样目标、最终发送值等于配置，
+并记录实际双臂误差、夹爪开度及完整执行结果。更大范围的回位逐步扩展验证。
+跟踪策略复验使用已有命令与反馈偏差超过5°的起点：首条home命令应与采样的HAL命令一致，
+误差超5°时应记录并继续发布；到达轨迹终点后，仍须按上述终点条件完成或超时报错。
 
 ## 关节增量
 

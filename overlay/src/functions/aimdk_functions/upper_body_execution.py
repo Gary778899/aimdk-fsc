@@ -34,6 +34,8 @@ class UpperBodyExecutor:
         self.rclpy, self.node, self.options, self.diagnostics = rclpy, node, options, diagnostics
         # 起点来源由入口显式指定，旧调用方保留实际反馈默认值。
         self.arm_start_source = getattr(options, 'arm_start_source', 'state')
+        self.tracking_policy = ('observation_only' if getattr(options, 'action', None) == 'home'
+                                else 'abort_on_error')
         self.feedback = UpperBodyFeedbackPort(
             node, diagnostics, require_urs=options.execute,
             feedback_timeout=options.feedback_timeout, compensation=options.compensation,
@@ -150,7 +152,7 @@ class UpperBodyExecutor:
                                 source='native_upper_body', mode='URS/RUNNING')
 
     def publish(self):
-        """按50Hz统一取两侧轨迹并用最新反馈计算补偿，校验后发布完整目标；间隔上限80ms。"""
+        """按50Hz发布完整目标并记录跟踪误差；home仅观测误差，其余动作沿用5度中止门槛。"""
         if self.command_target is None:
             return
         values = self.feedback.checked()
@@ -161,7 +163,10 @@ class UpperBodyExecutor:
             self.captured, ideal, self.options, self.compensation, values,
             interpolate((0.,), (1.,), elapsed, self.options.duration)[0])
         self.command_target = target
-        check_arm(values['arm'].positions, target.arm_rad, tolerance=ARM_TRACKING_TOLERANCE)
+        actual = values['arm'].positions
+        tracking_error = [a-b for a, b in zip(actual, target.arm_rad)]
+        if self.tracking_policy != 'observation_only':
+            check_arm(actual, target.arm_rad, tolerance=ARM_TRACKING_TOLERANCE)
         # 双侧计算完成后再次校验时效，并以实际发送时刻检查既有间隔。
         self.feedback.checked()
         msg = build_upper_body_command(self.node, target, self.sequence % (2 ** 32))
@@ -175,6 +180,12 @@ class UpperBodyExecutor:
         self.sequence += 1
         self.diagnostics.record('command_published', sequence=msg.header.sequence,
                                 arm_rad=list(target.arm_rad), hand_openings=list(target.hand_openings),
+                                actual_arm_rad=list(actual), tracking_error_rad=tracking_error,
+                                tracking_exceeds_5deg_observation=any(
+                                    abs(error) > ARM_TRACKING_TOLERANCE for error in tracking_error),
+                                arm_feedback_serial=values['arm'].serial,
+                                arm_feedback_stamp_s=values['arm'].stamp,
+                                arm_feedback_received_monotonic_s=values['arm'].received,
                                 command_stamp_s=msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9,
                                 publish_gap_s=gap, compensation=self.compensation_details,
                                 ideal_arm_rad=list(ideal.arm_rad),
@@ -182,9 +193,10 @@ class UpperBodyExecutor:
                                 calculation_seconds=sent_at-now)
 
     def execute(self, captured, target, trajectory):
-        """以5度跟踪容差执行完整轨迹，终点新反馈在5度容差内持续0.3秒；额外最多2秒。
+        """执行完整轨迹；home跟踪误差仅观测，其余动作沿用5度跟踪中止门槛。
 
-        trajectory提供同一时间网格的完整目标；夹爪仅更新开度并持续发送。
+        所有动作均要求终点新反馈在5度容差内持续0.3秒，额外最多2秒。
+        trajectory提供同一时间轴的完整目标；夹爪仅更新开度并持续发送。
         """
         self.enable_commands(captured)
         first = self.feedback.checked()
@@ -196,6 +208,7 @@ class UpperBodyExecutor:
         self.diagnostics.record('motion_begin', origin_rad=list(captured.arm_rad),
                                 target_rad=list(target.arm_rad), duration_s=self.options.duration,
                                 tracking_tolerance_deg=math.degrees(ARM_TRACKING_TOLERANCE),
+                                tracking_policy=self.tracking_policy,
                                 endpoint_tolerance_deg=math.degrees(ARM_ENDPOINT_TOLERANCE),
                                 settling_timeout_s=SETTLING_TIMEOUT_S,
                                 endpoint_stable_s=ENDPOINT_STABLE_S,
@@ -207,7 +220,8 @@ class UpperBodyExecutor:
             values = self.spin()
             now = time.monotonic()
             expected = self.last_sent if self.last_sent is not None else captured
-            check_arm(values['arm'].positions, expected.arm_rad, tolerance=ARM_TRACKING_TOLERANCE)
+            if self.tracking_policy != 'observation_only':
+                check_arm(values['arm'].positions, expected.arm_rad, tolerance=ARM_TRACKING_TOLERANCE)
             if now >= arrival:
                 newer = (self.last_sent is not None and self.last_elapsed >= self.options.duration
                          and self.last_sent.hand_openings == target.hand_openings) and all(

@@ -20,14 +20,14 @@ def selected_sides(side):
 def validate_target(captured, target, options):
     """检查实际参与控制的关节起点和目标范围，其余保持采样；越界抛出ControlFailure。
 
-    joint关闭补偿时只检查所选关节，tcp及开启补偿时检查所选臂全部关节。
+    joint关闭补偿时只检查所选关节，tcp、home及开启补偿时检查所选臂全部关节。
     gripper不修改手臂；完整目标由CapturedTarget校验有限值和夹爪开度。
     """
     active = set()
     if options.action != 'gripper':
         for side in selected_sides(options.side):
             offset = 0 if side == 'left' else 7
-            indices = (range(7) if options.action == 'tcp' or options.compensation
+            indices = (range(7) if options.action in ('tcp', 'home') or options.compensation
                        else (JOINT_TAGS.index(options.tag),))
             active.update(offset + index for index in indices)
     for index, (start, value) in enumerate(zip(captured.arm_rad, target.arm_rad)):

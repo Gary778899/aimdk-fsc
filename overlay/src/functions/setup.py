@@ -27,6 +27,7 @@ setup(
         'console_scripts': [
             'volume_control = aimdk_functions.volume_control:main',
             'upper_body_control = aimdk_functions.upper_body_control:main',
+            'upper_body_home = aimdk_functions.upper_body_home:main',
             'arm_compensation_probe = aimdk_functions.arm_compensation_probe:main',
             'upper_body_kinematics_check = aimdk_functions.upper_body_kinematics_check:main',
             'upper_body_acceptance = aimdk_functions.upper_body_acceptance:main',
