@@ -64,6 +64,24 @@ class AnalysisTests(TestCase):
         result = fit_delay(dict(commands=commands), records, 'right', .1, .01, .08)
         self.assertEqual(result['status'], 'unavailable')
 
+    def test_approach_lag_is_separate_from_ik_residual_including_canceled_goal(self):
+        """当前保持目标可已撤销终点，IK残差仍取原候选，四项有符号分解闭合。"""
+        fields = dict(sequence=1, input_seq=2, ideal_arm_rad=[.04]*14,
+                      ik_goal_arm_rad=[.04]*14, arm_rad=[.06]*14,
+                      actual_arm_rad=[.05]*14, joint_approach=dict(paused=True))
+        arm = dict(enabled=True, candidate_rad=[.1]*7, requested_position_m=[.1]*3,
+                   requested_rotation_matrix=np.eye(3).tolist())
+        data = dict(config={}, commands=[dict(fields=fields, monotonic_s=10., line=1)],
+                    accepted={2: dict(right=arm)}, mappings={})
+        with patch('aimdk_functions.upper_body_teleop_analyze.make_model', return_value=LinearModel()):
+            row = make_records(data, 'right')[0]
+        np.testing.assert_allclose(row['ik_mm'], [0.]*3)
+        np.testing.assert_allclose(row['approach_mm'], [-60.]*3)
+        np.testing.assert_allclose(np.sum([row[key] for key in
+                                          ('ik_mm', 'approach_mm', 'compensation_mm', 'tracking_mm')], axis=0),
+                                   row['task_mm'])
+        self.assertTrue(row['joint_approach_paused'])
+
     def test_signed_statistics_preserve_mean_and_absolute_percentile(self):
         """统计保留误差符号，P95使用绝对值而非有符号排序。"""
         result = statistics([-2., 1.])

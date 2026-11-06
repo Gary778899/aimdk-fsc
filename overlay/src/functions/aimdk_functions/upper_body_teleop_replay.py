@@ -112,7 +112,8 @@ def recovery_target(target, poses, openings, blend):
 
 def replay_frames(frames, session, solver, diagnostics, reference_provider=None,
                   display=None, timing_provider=None, before_commit=None, on_error=None,
-                  commit_lock=None, hold_motion=None, ik_recovery_duration=None):
+                  commit_lock=None, hold_motion=None, ik_recovery_duration=None,
+                  on_commit=None, on_local_failure=None):
     """串行消费XR帧并联合提交映射与IK，返回接受数量。
 
     离线首帧使用所选快照建立TCP参考，后续Grip重按使用最后已接受理想目标；
@@ -125,6 +126,8 @@ def replay_frames(frames, session, solver, diagnostics, reference_provider=None,
     commit_lock串行化联合提交、接收边沿与执行侧停发。
     ik_recovery_duration为正秒数时，局部空解保持完整目标并继续；新目标可解后按
     原始接收时间做五次过渡。None沿用首错终止，其他异常始终终止。
+    on_commit(value, edge)在共同锁内通知执行侧已提交目标；on_local_failure(frame)
+    在拒绝诊断后于共同锁内取消执行侧未完成推进，并同步当前保持参考。
     """
     if ik_recovery_duration is not None and (not np.isfinite(ik_recovery_duration)
                                              or ik_recovery_duration <= 0):
@@ -145,6 +148,8 @@ def replay_frames(frames, session, solver, diagnostics, reference_provider=None,
             poses, openings, reference, rebase_sides = (
                 (solver.tcp_poses(), solver.accepted.hand_openings, None, ())
                 if reference_provider is None else reference_provider(frame))
+            # 执行侧可在参考提供阶段将Grip边沿锚定到当前已发布理想目标。
+            before_ik, before_mapping = tracking_state(solver), session.describe()
             edge = hold_motion(frame) if hold_motion else False
             mapping_proposal = session.propose(frame, poses, openings, hold_motion=edge)
             diagnostics.record('mapping_candidate', input_seq=frame.seq,
@@ -191,6 +196,8 @@ def replay_frames(frames, session, solver, diagnostics, reference_provider=None,
                 mapping_committed = True
                 value = solver.commit(candidate)
                 committed = True
+                if on_commit is not None:
+                    on_commit(value, edge)
                 if holding:
                     if edge:
                         recovery_started = None
@@ -242,6 +249,9 @@ def replay_frames(frames, session, solver, diagnostics, reference_provider=None,
                                 ik_before=before_ik, ik_after=tracking_state(solver),
                                 mapping_before=before_mapping, mapping_after=session.describe(),
                                 calculation_seconds=time.monotonic() - began)
+            if recoverable and on_local_failure is not None:
+                with commit_lock if commit_lock is not None else nullcontext():
+                    on_local_failure(frame)
             if timing_provider is not None:
                 diagnostics.record('frame_result_timing', input_seq=frame.seq,
                                     accepted=False, **timing_provider(frame))

@@ -38,6 +38,11 @@ def summarize(path):
                     if fields.get('tracking_error_rad'):
                         metrics.setdefault('command.max_tracking_error_rad', []).append(
                             max(abs(value) for value in fields['tracking_error_rad']))
+                    if fields.get('joint_approach'):
+                        approach = fields['joint_approach']
+                        metrics.setdefault('command.approach_remaining_rad', []).append(
+                            max(abs(value) for value in approach['remaining_rad']))
+                        metrics.setdefault('command.approach_scale', []).append(approach['scale'])
                     if fields.get('previous_target_tracking_error_rad') is not None:
                         metrics.setdefault('command.max_previous_target_tracking_error_rad', []).append(
                             max(abs(value) for value in fields['previous_target_tracking_error_rad']))

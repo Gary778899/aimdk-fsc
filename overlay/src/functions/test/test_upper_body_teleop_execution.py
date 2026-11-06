@@ -1,6 +1,7 @@
 """遥操持续发布的首帧、保持、输入超时及停发契约；由用户在机器人容器运行。"""
 
 from types import SimpleNamespace
+import math
 import unittest
 from unittest.mock import Mock, patch
 
@@ -8,7 +9,7 @@ from aimdk_functions.dual_arm_control_core import ControlFailure
 from aimdk_functions.upper_body_cartesian_core import CapturedTarget
 from aimdk_functions.upper_body_kinematics.parameters import EXECUTION_LIMITS_RAD
 from aimdk_functions.upper_body_online_core import OnlineTargetStore
-from aimdk_functions.upper_body_teleop_execution import UpperBodyTeleopExecutor
+from aimdk_functions.upper_body_teleop_execution import UpperBodyTeleopExecutor, approach_joints
 
 
 def message(node, target, sequence):
@@ -22,7 +23,7 @@ class OnlineExecutionTests(unittest.TestCase):
 
     def setUp(self):
         """使用限位中点的完整HAL目标，不加载ROS节点或硬件。"""
-        self.options = SimpleNamespace(input_timeout=.5, compensation_duration=5.)
+        self.options = SimpleNamespace(input_timeout=.5, compensation_duration=5., joint_speed_deg_s=30.)
         self.log = Mock()
         with patch('aimdk_functions.upper_body_teleop_execution.UpperBodyExecutor.__init__',
                    return_value=None):
@@ -77,7 +78,7 @@ class OnlineExecutionTests(unittest.TestCase):
             self.port.publish()
         last = [call.kwargs for call in self.log.record.call_args_list
                 if call.args[0] == 'command_published'][-1]
-        self.assertAlmostEqual(last['tracking_error_rad'][10], .14)
+        self.assertAlmostEqual(last['tracking_error_rad'][10], .12 + math.radians(.6))
         self.assertAlmostEqual(last['previous_target_tracking_error_rad'][10], .12)
         self.assertEqual(last['previous_sent_arm_rad'], list(self.target.arm_rad))
         self.assertEqual(last['previous_command_sequence'], 0)
@@ -128,11 +129,73 @@ class OnlineExecutionTests(unittest.TestCase):
             joints[7] += .02
             changed = CapturedTarget(tuple(joints), self.target.hand_openings)
             self.store.put(changed, 2)
+        with patch('aimdk_functions.upper_body_teleop_execution.time.monotonic', return_value=100.06), \
+                patch('aimdk_functions.upper_body_teleop_execution.build_upper_body_command', side_effect=message):
             self.port.publish()
         self.assertEqual(self.port.last_sent, changed)
         rows = [call.kwargs for call in self.log.record.call_args_list if call.args[0] == 'command_published']
         self.assertEqual(rows[-1]['input_seq'], 2)
         self.assertEqual(rows[-1]['arm_rad'], list(changed.arm_rad))
+
+    def test_large_goal_advances_without_new_ik_and_grip_hold_cancels_remainder(self):
+        """大步目标分次推进，无新IK也继续；Grip冻结后取消剩余运动并从冻结点重启。"""
+        with patch('aimdk_functions.upper_body_teleop_execution.time.monotonic', return_value=100.), \
+                patch('aimdk_functions.upper_body_teleop_execution.build_upper_body_command', side_effect=message):
+            self.port.begin_online(self.store, self.frame)
+        goal = self.target.for_arm('left', tuple(q + (.2 if i == 0 else 0.)
+                                               for i, q in enumerate(self.target.arm_rad[:7])))
+        value = self.store.put(goal, 2)
+        self.port.accept_online(value, False)
+        for stamp in (100.02, 100.04):
+            with patch('aimdk_functions.upper_body_teleop_execution.time.monotonic', return_value=stamp), \
+                    patch('aimdk_functions.upper_body_teleop_execution.build_upper_body_command', side_effect=message):
+                self.port.publish()
+        held = self.port.hold_current()
+        self.assertAlmostEqual(held.arm_rad[0]-self.target.arm_rad[0], math.radians(1.2))
+        self.assertEqual(self.store.get().target, goal)
+        with patch('aimdk_functions.upper_body_teleop_execution.time.monotonic', return_value=100.06), \
+                patch('aimdk_functions.upper_body_teleop_execution.build_upper_body_command', side_effect=message):
+            self.port.publish()
+        self.assertEqual(self.port.last_ideal, held)
+        self.port.accept_online(self.store.put(held, 3), True)
+        self.port.accept_online(self.store.put(goal, 4), False)
+        with patch('aimdk_functions.upper_body_teleop_execution.time.monotonic', return_value=100.08), \
+                patch('aimdk_functions.upper_body_teleop_execution.build_upper_body_command', side_effect=message):
+            self.port.publish()
+        self.assertAlmostEqual(self.port.last_ideal.arm_rad[0]-held.arm_rad[0], math.radians(.6))
+        row = [c.kwargs for c in self.log.record.call_args_list if c.args[0]=='command_published'][-1]
+        self.assertEqual(row['ik_goal_arm_rad'], list(goal.arm_rad))
+        self.assertEqual(row['ideal_arm_rad'], list(self.port.last_ideal.arm_rad))
+
+    def test_common_progress_preserves_dual_arm_ratio_without_overshoot(self):
+        """左右不同幅度使用共同进度，20ms最大推进0.6度，接近终点时精确到达。"""
+        joints = list(self.target.arm_rad)
+        joints[0] += math.radians(10.)
+        joints[7] -= math.radians(5.)
+        goal = CapturedTarget(tuple(joints), (.8, .2))
+        next_target, _ = approach_joints(self.target, goal, .02, math.radians(30.))
+        self.assertAlmostEqual(math.degrees(next_target.arm_rad[0]-self.target.arm_rad[0]), .6)
+        self.assertAlmostEqual(math.degrees(next_target.arm_rad[7]-self.target.arm_rad[7]), -.3)
+        self.assertEqual(next_target.hand_openings, goal.hand_openings)
+        jittered, _ = approach_joints(self.target, goal, .035, math.radians(30.))
+        self.assertAlmostEqual(math.degrees(jittered.arm_rad[0]-self.target.arm_rad[0]), 1.05)
+        arrived, _ = approach_joints(next_target, goal, 1., math.radians(30.))
+        self.assertEqual(arrived, goal)
+
+    def test_illegal_goal_is_rejected_even_when_intermediate_would_be_in_range(self):
+        """渐进不能掩盖非法远端目标，越限仍在发送前停发。"""
+        with patch('aimdk_functions.upper_body_teleop_execution.time.monotonic', return_value=100.), \
+                patch('aimdk_functions.upper_body_teleop_execution.build_upper_body_command', side_effect=message):
+            self.port.begin_online(self.store, self.frame)
+        joints = list(self.target.arm_rad)
+        joints[0] = EXECUTION_LIMITS_RAD[0][1] + .01
+        self.store.put(CapturedTarget(tuple(joints), self.target.hand_openings), 2)
+        with patch('aimdk_functions.upper_body_teleop_execution.time.monotonic', return_value=100.02):
+            with self.assertRaises(ControlFailure):
+                self.port.publish()
+        self.assertEqual(self.port.publisher.publish.call_count, 1)
+        self.assertEqual(self.port.last_ideal, self.target)
+        self.assertTrue(self.port.stopped)
 
     def test_timeout_stops_publishing_and_new_target_cannot_restart(self):
         """输入超过0.5秒后停发，之后更新缓存也不能自动恢复。"""

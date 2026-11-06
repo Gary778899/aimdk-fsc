@@ -20,12 +20,14 @@ class InputSelection:
 class LatestInput:
     """接收线程独占录制器，主线程消费边沿FIFO和单槽最新位姿。"""
 
-    def __init__(self, source, recorder, config, diagnostics, options, lock=None, on_error=None):
-        """准备接收器；lock与执行提交共用，on_error在输入失效时立即停发。"""
+    def __init__(self, source, recorder, config, diagnostics, options, lock=None, on_error=None,
+                 on_edge=None):
+        """准备接收器；lock与提交共用，on_error停发，on_edge在接收Grip边沿时冻结推进。"""
         self.source, self.recorder = source, recorder
         self.config, self.diagnostics, self.options = config, diagnostics, options
         self.lock = lock if lock is not None else threading.RLock()
         self.on_error = on_error
+        self.on_edge = on_edge
         self.validator = Session(config)
         self.edges = deque()
         self.latest = self.selected = None
@@ -91,6 +93,8 @@ class LatestInput:
                             for side in ('left', 'right'))
             edge = pressed != self.pressed
             if edge:
+                if self.on_edge is not None:
+                    self.on_edge()
                 self.generation += 1
                 self.edges.append(InputSelection(frame, True, self.generation))
             if self.latest is not None and self.latest.frame.seq > self.consumed_seq:

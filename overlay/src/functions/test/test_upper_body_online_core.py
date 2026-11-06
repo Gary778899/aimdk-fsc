@@ -8,6 +8,7 @@ import numpy as np
 
 from remote_control.frames import Controller, Pose, TCPGoal, TargetFrame, XRFrame
 from remote_control.mapping import MappingConfig, Session
+from aimdk_functions.dual_arm_control_core import ControlFailure
 from aimdk_functions.upper_body_cartesian_core import CapturedTarget
 from aimdk_functions.upper_body_kinematics.parameters import EXECUTION_LIMITS_RAD
 from aimdk_functions.upper_body_online_core import DualArmOnlineIK, OnlineIKFailure
@@ -270,6 +271,27 @@ class OnlineCoreTest(unittest.TestCase):
                   if call.args[0] == 'xr_input']
         self.assertEqual(inputs, [1, 2])
 
+    def test_hold_published_reanchors_seed_preserves_origin_and_invalidates_proposal(self):
+        """发布目标落后IK终点时，用中间目标重建种子，旧候选失效且累计参考保持。"""
+        accepted = self.solver.propose(self.frame(1, .2, .2))
+        self.solver.commit(accepted)
+        pending = self.solver.propose(self.frame(2, .25, .25))
+        origin, branches = self.solver.origin, {side: state.branch for side, state in self.solver.states.items()}
+        joints = list(self.captured.arm_rad)
+        joints[0] += .05
+        joints[7] += .05
+        held = CapturedTarget(tuple(joints), (.3, .7))
+        self.solver.hold_published(held)
+        self.assertEqual(self.solver.origin, origin)
+        self.assertEqual(self.solver.last_input_seq, 1)
+        self.assertEqual(self.solver.accepted, held)
+        self.assertEqual(self.solver.store.get().target, held)
+        for index, side in enumerate(('left', 'right')):
+            self.assertEqual(self.solver.states[side].joints, held.arm_rad[index*7:index*7+7])
+            self.assertEqual(self.solver.states[side].branch, branches[side])
+        with self.assertRaises(ControlFailure):
+            self.solver.commit(pending)
+
     def recovery_frame(self, seq, seconds, x=0., grip=1., trigger=.3):
         """构造双侧同步移动的XR帧；seconds用于确定恢复过渡进度。"""
         hand = Controller(Pose((x, 0., 0.), np.eye(3)), grip, trigger, tracking_valid=True)
@@ -354,6 +376,39 @@ class OnlineCoreTest(unittest.TestCase):
         self.assertAlmostEqual(self.solver.accepted.arm_rad[0], self.captured.arm_rad[0] + .1)
         self.assertAlmostEqual(session.describe()['sides']['left']['robot_reference']['position_m'][0],
                                self.captured.arm_rad[0] + .1)
+
+    def test_execution_hold_callback_reanchors_recovery_to_published_intermediate(self):
+        """拒绝候选后执行回调取消远端终点，后续恢复从已发布中间目标开始。"""
+        session, diagnostics = self.recovery_session(), Mock()
+        commits = Mock()
+        held_joints = list(self.captured.arm_rad)
+        held_joints[0] += .05
+        held_joints[7] += .05
+        held = CapturedTarget(tuple(held_joints), (.4, .4))
+
+        def freeze(frame):
+            """模拟主线程在无解诊断后同步执行侧已发布目标。"""
+            self.assertEqual(frame.seq, 3)
+            self.solver.hold_published(held)
+            session.hold(self.solver.tcp_poses(), held.hand_openings)
+
+        def frames():
+            """先接受远端目标，再注入失败，最后恢复首帧应仍为发布中间目标。"""
+            yield self.recovery_frame(1, 1.)
+            yield self.recovery_frame(2, 1.2, .2)
+            self.arms['right'].fail = True
+            yield self.recovery_frame(3, 1.3, .3)
+            self.assertEqual(self.solver.accepted, held)
+            self.assertEqual(session.describe()['sides']['left']['opening'], .4)
+            self.arms['right'].fail = False
+            yield self.recovery_frame(4, 1.4, .3)
+            self.assertEqual(self.solver.accepted, held)
+
+        replay_frames(frames(), session, self.solver, diagnostics, ik_recovery_duration=.5,
+                      on_commit=commits, on_local_failure=freeze)
+        self.assertEqual(commits.call_count, 3)
+        failure = next(c.kwargs for c in diagnostics.record.call_args_list if c.args[0]=='ik_rejected')
+        self.assertEqual(failure['ik_before'], failure['ik_after'])
 
     def test_recovery_keeps_joint_limit_failure_fatal(self):
         """打开空解恢复后，已计算候选越限仍停发并终止消费后续帧。"""

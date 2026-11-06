@@ -47,6 +47,8 @@ def parser():
                         help='映射显示间隔秒数，默认1；Grip事件立即显示，0关闭显示')
     result.add_argument('--ik-recovery-duration', type=float, default=.5,
                         help='局部IK无解后恢复过渡秒数，默认0.5')
+    result.add_argument('--joint-speed-deg-s', type=float, default=30.,
+                        help='执行侧理想关节目标渐进速度/度每秒，默认30，须大于0')
     result.add_argument('--execute', action='store_true', help='显式开启原生上肢持续执行，要求URS/RUNNING')
     result.add_argument('--compensation', action=argparse.BooleanOptionalAction, default=True,
                         help='执行默认开启位置偏置补偿，--no-compensation关闭')
@@ -129,7 +131,7 @@ def main(args=None):
             value = getattr(options, name)
             if not math.isfinite(value) or not lower <= value <= upper:
                 raise ValueError(f'{name}须为{lower}..{upper}秒')
-        for name in ('input_timeout', 'duration', 'ik_recovery_duration'):
+        for name in ('input_timeout', 'duration', 'ik_recovery_duration', 'joint_speed_deg_s'):
             value = getattr(options, name)
             if value is not None and (not math.isfinite(value) or value <= 0):
                 raise ValueError(f'{name}须为有限正秒数')
@@ -144,8 +146,11 @@ def main(args=None):
             options=vars(options), code_sha256=code_manifest(),
             mapping_config=asdict(mapping_config), input_config=asdict(input_config),
             execute=options.execute, compensation_enabled=options.compensation,
-            reference_policy='mc_command_first_grip_then_accepted_ideal_hold_on_local_ik_failure',
+            reference_policy=('mc_command_first_grip_then_published_ideal'
+                              if options.execute else 'mc_command_first_grip_then_accepted_ideal'),
             ik_failure_policy='hold_complete_target_retry_new_input',
+            joint_approach_policy=('common_joint_progress_before_compensation'
+                                   if options.execute else None),
             ik_recovery_duration_s=options.ik_recovery_duration)
         xr_log = XRLog(
             options.xr_output, unique_path=True,
@@ -194,7 +199,8 @@ def main(args=None):
         source.start()
         receiver = LatestInput(source, recorder, mapping_config, diagnostics, options,
                                lock=port.command_lock if options.execute else None,
-                               on_error=port.stop if options.execute else None)
+                               on_error=port.stop if options.execute else None,
+                               on_edge=port.hold_current if options.execute else None)
         if options.execute:
             port.input_receiver = receiver
         diagnostics.record('live_input_policy', pose_hz=20.,
@@ -203,6 +209,9 @@ def main(args=None):
         print('等待XR完整帧；位姿IK上限20Hz，Grip边沿保序处理；Ctrl-C结束。', flush=True)
         print(f'局部IK无解时保持完整目标；新目标可解后用{options.ik_recovery_duration:g}秒恢复跟踪。',
               flush=True)
+        if options.execute:
+            print(f'发布侧理想关节目标按{options.joint_speed_deg_s:g}°/s渐进靠近；补偿随后计算。',
+                  flush=True)
         frames = iter(live_frames(receiver, port, options))
         first_frame = initial_values = None
         if options.execute:
@@ -229,10 +238,31 @@ def main(args=None):
             diagnostics.record('online_ik_config', **solver.describe())
             session = Session(mapping_config)
 
+            def hold_execution(frame, reason):
+                """在共同锁内用当前发布理想目标同步IK种子及映射保持；记录取消的远端终点。"""
+                previous = solver.accepted
+                target = port.hold_current()
+                if target is None:
+                    return
+                solver.hold_published(target)
+                session.hold(solver.tcp_poses(), target.hand_openings)
+                diagnostics.record('execution_target_held', input_seq=frame.seq, reason=reason,
+                                   previous_ik_goal_arm_rad=list(previous.arm_rad),
+                                   held_ideal_arm_rad=list(target.arm_rad),
+                                   hand_openings=list(target.hand_openings),
+                                   last_accepted_input_seq=solver.last_input_seq)
+
+            def hold_failed_target(frame):
+                """可恢复空解已拒绝后取消渐进队列，以当前发布理想目标开始后续恢复。"""
+                hold_execution(frame, 'local_ik_unavailable')
+
             def live_reference(frame):
                 """校验输入与反馈时效，生成HAL首次接管或理想目标重接管参考。"""
                 if options.execute:
                     port.check_background()
+                    with receiver.lock:
+                        if receiver.selected.edge and solver.command_reference_sides:
+                            hold_execution(frame, 'grip_edge')
                 values = (initial_values if first_frame is not None and frame.seq == first_frame.seq
                           else port.feedback.checked())
                 if (options.input_timeout is not None
@@ -267,7 +297,9 @@ def main(args=None):
                           before_commit=before_live_commit,
                           on_error=port.stop if options.execute else None,
                           commit_lock=receiver.lock, hold_motion=hold_edge_motion,
-                          ik_recovery_duration=options.ik_recovery_duration)
+                          ik_recovery_duration=options.ik_recovery_duration,
+                          on_commit=port.accept_online if options.execute else None,
+                          on_local_failure=hold_failed_target if options.execute else None)
         if options.execute:
             port.stop()
             port.check_background()

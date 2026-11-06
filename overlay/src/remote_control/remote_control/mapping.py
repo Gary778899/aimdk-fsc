@@ -302,6 +302,12 @@ class Session:
         self._revision += 1
         return proposal.target if accepted_target is None else accepted_target
 
+    def hold(self, poses, hand_openings):
+        """用执行侧当前位姿及开度更新保持目标，延续Grip参考；调用前须完成候选提交或拒绝。"""
+        self._states = tuple(replace(state, held_pose=poses[side], opening=hand_openings[index])
+                             for index, (side, state) in enumerate(zip(SIDES, self._states)))
+        self._revision += 1
+
     def reject(self, proposal):
         """拒绝当前候选，保留先前参考及保持目标；该输入序号已消费。"""
         self.validate_commit(proposal)

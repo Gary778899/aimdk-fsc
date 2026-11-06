@@ -103,6 +103,10 @@ def make_records(data, side, start=0., end=None):
         arm = data['accepted'].get(seq, {}).get(side)
         if seq is not None and arm is None:
             raise ValueError(f"第{command['line']}行发布目标找不到已接受IK输入{seq}")
+        # 保持时存储目标可已撤销远端终点，IK残差仍用原接受事件的真实候选计算。
+        ik_joints = np.asarray(arm['candidate_rad'] if arm is not None and 'joint_approach' in fields
+                               else joints['ideal'], dtype=float)
+        ik_pose = model.forward_kinematics(ik_joints)
         desired = (poses['ideal'][0] if arm is None else np.asarray(arm['requested_position_m']))
         desired_rotation = (poses['ideal'][1] if arm is None else arm['requested_rotation_matrix'])
         compensation = fields.get('compensation')
@@ -119,14 +123,18 @@ def make_records(data, side, start=0., end=None):
                       publish_gap_s=fields.get('publish_gap_s'),
                       saturated_joints=sum(detail.get('bias_saturated', [])),
                       rotation_error_deg=rotation_error(poses['feedback'][1], desired_rotation),
-                      ik_rotation_error_deg=rotation_error(poses['ideal'][1], desired_rotation))
+                      ik_rotation_error_deg=rotation_error(ik_pose[1], desired_rotation),
+                      joint_approach_paused=fields.get('joint_approach', {}).get('paused', False))
         for name, vector in (
                 ('ideal_rad', joints['ideal']), ('sent_rad', joints['sent']),
                 ('feedback_rad', joints['feedback']),
+                ('ik_solution_rad', ik_joints),
+                ('approach_error_deg', np.degrees(joints['ideal']-ik_joints)),
                 ('bias_deg', np.degrees(joints['sent']-joints['ideal'])),
                 ('send_error_deg', np.degrees(joints['feedback']-joints['sent'])),
                 ('ideal_error_deg', np.degrees(joints['feedback']-joints['ideal'])),
-                ('ik_mm', (poses['ideal'][0]-desired)*1000),
+                ('ik_mm', (ik_pose[0]-desired)*1000),
+                ('approach_mm', (poses['ideal'][0]-ik_pose[0])*1000),
                 ('compensation_mm', (poses['sent'][0]-poses['ideal'][0])*1000),
                 ('tracking_mm', (poses['feedback'][0]-poses['sent'][0])*1000),
                 ('task_mm', (poses['feedback'][0]-desired)*1000),
@@ -147,10 +155,11 @@ def summarize_records(records):
     """对所选窗口及阶段统计关节、TCP分解与反馈复用；按发布计数，另报唯一反馈数。"""
     metrics = {}
     for key in ('bias_deg', 'send_error_deg', 'ideal_error_deg', 'ideal_rad', 'ik_mm',
+                'approach_mm', 'approach_error_deg',
                 'compensation_mm', 'tracking_mm', 'task_mm', 'rotation_error_deg',
                 'ik_rotation_error_deg', 'feedback_age_s', 'publish_gap_s'):
         metrics[key] = statistics([row[key] for row in records if row[key] is not None])
-    for key in ('ik_mm', 'compensation_mm', 'tracking_mm', 'task_mm'):
+    for key in ('ik_mm', 'approach_mm', 'compensation_mm', 'tracking_mm', 'task_mm'):
         metrics[key+'_norm'] = statistics([np.linalg.norm(row[key]) for row in records])
     serials = [row['feedback_serial'] for row in records if row['feedback_serial'] is not None]
     return dict(published_samples=len(records), unique_feedback_samples=len(set(serials)),
@@ -256,7 +265,7 @@ def plot_records(path, records):
         axes[index].plot(times, [row[key] for row in records])
         axes[index].set_ylabel(key)
         axes[index].grid(alpha=.3)
-    for key in ('ik_mm', 'compensation_mm', 'tracking_mm', 'task_mm'):
+    for key in ('ik_mm', 'approach_mm', 'compensation_mm', 'tracking_mm', 'task_mm'):
         axes[3].plot(times, [np.linalg.norm(row[key]) for row in records], label=key)
     axes[3].legend()
     axes[3].set_ylabel('TCP norm (mm)')
@@ -325,6 +334,8 @@ def main(args=None):
             '位置单位mm，关节误差单位deg，原始关节rad；向量按该侧关节0..6或XYZ排列。\n'
             '统计按发布事件计数，重复反馈数量另列。holding表示Grip释放后的目标保持，'
             '不证明实体已稳定；ramp覆盖补偿渐入。startup的IK残差以初始理想FK定义为零。\n'
+            '新执行日志的approach_mm为已发布理想FK减原接受IK候选FK，包含渐进滞后及保持时撤销终点的差异。'
+            '四项有符号位置分解ik+approach+compensation+tracking等于task；历史日志approach为零。\n'
             '历史日志缺反馈标识和发布时刻时不拟合延迟。延迟为发送至反馈接收的表观估计，'
             '不代表内部执行时刻；前2/3拟合，后1/3验证，边界最优需复核搜索范围。\n'
             '名义FK误差不包含独立实体标定和世界坐标测量。\n', encoding='utf-8')

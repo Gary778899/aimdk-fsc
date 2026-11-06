@@ -73,6 +73,16 @@ class LatestInputTests(unittest.TestCase):
             self.assertTrue(self.receiver.can_commit())
             self.assertEqual(self.receiver.take(100.03).frame.seq, 4)
 
+    def test_edge_freezes_execution_at_receive_before_main_selects_it(self):
+        """接收Grip松开即通知执行侧冻结，主线程尚未消费边沿也不继续追赶。"""
+        callback = Mock()
+        self.receiver.on_edge = callback
+        self.receiver.accept(frame(1, 100., right=1.), 100.)
+        self.receiver.accept(frame(2, 100.01, right=1.), 100.01)
+        self.receiver.accept(frame(3, 100.02), 100.02)
+        self.assertIsNone(self.receiver.selected)
+        self.assertEqual(callback.call_count, 2)
+
     def test_unselected_invalid_tracking_is_not_hidden(self):
         """即使普通帧不进入IK，接收侧仍检查跟踪有效性。"""
         value = frame(1, 100.)

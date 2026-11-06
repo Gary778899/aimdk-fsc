@@ -127,6 +127,24 @@ class DualArmOnlineIK:
             result[side] = Pose(position, rotation)
         return result
 
+    def hold_published(self, target):
+        """将已发布理想target设为保持及后续IK种子，取消未完成终点；保留分支与累计参考。
+
+        由主线程在共同提交锁内、没有待提交候选时调用；输入序号不推进，revision更新。
+        SEW按当前种子重算，补偿偏置不进入此状态。
+        """
+        states = {}
+        for index, side in enumerate(SIDES):
+            joints = target.arm_rad[index*7:index*7+7]
+            self.accepted.for_arm(side, joints)
+            sew = float(self.arms[side].solver.sew_angle(np.asarray(joints)))
+            if not math.isfinite(sew):
+                raise ControlFailure(f'{side}已发布目标SEW非有限')
+            states[side] = ArmTrackingState(joints, sew, self.states[side].branch)
+        self.accepted, self.states = target, states
+        self.revision += 1
+        return self.store.put(target, self.last_input_seq, sorted(self.command_reference_sides))
+
     def describe(self):
         """返回实际模型、完整工具配置及源目标，供入口记录启动元数据。"""
         preset = Path(__file__).resolve().parent / 'upper_body_kinematics/vendor/assets/tcp_presets.json'
