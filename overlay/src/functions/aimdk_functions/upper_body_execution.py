@@ -34,7 +34,7 @@ class UpperBodyExecutor:
         self.rclpy, self.node, self.options, self.diagnostics = rclpy, node, options, diagnostics
         # 起点来源由入口显式指定，旧调用方保留实际反馈默认值。
         self.arm_start_source = getattr(options, 'arm_start_source', 'state')
-        self.tracking_policy = ('observation_only' if getattr(options, 'action', None) == 'home'
+        self.tracking_policy = ('observation_only' if getattr(options, 'action', None) in ('home', 'trajectory')
                                 else 'abort_on_error')
         self.feedback = UpperBodyFeedbackPort(
             node, diagnostics, require_urs=options.execute,
@@ -152,7 +152,7 @@ class UpperBodyExecutor:
                                 source='native_upper_body', mode='URS/RUNNING')
 
     def publish(self):
-        """按50Hz发布完整目标并记录跟踪误差；home仅观测误差，其余动作沿用5度中止门槛。"""
+        """按50Hz发布完整目标；home和trajectory仅观测跟踪误差，其余沿用5度中止门槛。"""
         if self.command_target is None:
             return
         values = self.feedback.checked()
@@ -193,7 +193,7 @@ class UpperBodyExecutor:
                                 calculation_seconds=sent_at-now)
 
     def execute(self, captured, target, trajectory):
-        """执行完整轨迹；home跟踪误差仅观测，其余动作沿用5度跟踪中止门槛。
+        """执行完整轨迹；home和trajectory跟踪误差仅观测，其余沿用5度跟踪中止门槛。
 
         所有动作均要求终点新反馈在5度容差内持续0.3秒，额外最多2秒。
         trajectory提供同一时间轴的完整目标；夹爪仅更新开度并持续发送。

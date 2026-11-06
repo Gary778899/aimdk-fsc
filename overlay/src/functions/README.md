@@ -5,7 +5,7 @@ ROS 2 包名为 `aimdk_functions`，使用 `ament_python`，依赖 NumPy >=1.21�
 
 运动统一入口为 `upper_body_control joint/tcp/gripper`。保留 `volume_control`、
 `arm_compensation_probe` 和 `upper_body_kinematics_check` 独立工具；
-`upper_body_home` 提供home位置录制与回位。
+`upper_body_home` 提供home位置录制与回位；`upper_body_trajectory` 提供已发布轨迹导出及回放。
 整合后的统一入口已由用户完成机器人端验证；覆盖范围见[启动保持调查](../../../docs/archive/upper_body_startup_hold_investigation_20261030.md)。
 本轮冗余模块整理仅完成本地静态、语法检查，需同步后重新构建并验证。
 历史命令、参数和实机结果见[整理前说明](../../../docs/archive/upper_body_commands_before_unification_20261030.md)
@@ -138,6 +138,69 @@ JSON格式版本为`schema_version=1`，记录`robot_model=x2-ultra`、`urdf_ver
 并记录实际双臂误差、夹爪开度及完整执行结果。更大范围的回位逐步扩展验证。
 跟踪策略复验使用已有命令与反馈偏差超过5°的起点：首条home命令应与采样的HAL命令一致，
 误差超5°时应记录并继续发布；到达轨迹终点后，仍须按上述终点条件完成或超时报错。
+
+## 双臂轨迹导出与回放
+
+适用X2 Ultra / v1.3.0，入口为`upper_body_trajectory export/run`。
+当前仅完成本地文件、语法及离线导出/读回检查，机器人容器构建与执行待验证。
+
+轨迹保存在工作区根目录`data/trajectories/`，与`data/home.json`使用同一持久化约定。
+机器人路径为`/home/agi/aimdk-fsc/data/trajectories/`；`data/`受现有同步排除保护，
+本地导出的文件使用“机器人：推送轨迹”任务上传，源码同步不会上传。
+备份复用“机器人：下载采集数据”任务。
+原始遥操日志保留在`log/`，回放执行日志沿用工作区`log/upper_body_*.jsonl`。
+
+`export`不导入ROS，从`upper_body_teleop_observe`日志提取`command_published.arm_rad`
+和`hand_openings`。时间轴使用`publish_begin_monotonic_s`，要求原日志具有此字段且时间严格推进。
+`--start/--end`为相对原日志首条发布的秒数，包含边界；所选首条发布重新记为0，至少需要两点。
+省略`--output`时写入当前工作目录下`data/trajectories/<源日志名>.jsonl`，已有文件拒绝覆盖。
+失败结束的源日志可导出其已发布片段，导出及预览显示源错误/退出记录；未发布的失败候选不进入轨迹。
+
+在本地项目根目录导出已正常完成的关闭补偿会话：
+
+```bash
+PYTHONPATH=overlay/src/functions python3 -m aimdk_functions.upper_body_trajectory export \
+  --log log/tracking_C_both_pose1_rep1_20261105_200837/upper_body_1793880584938905345_1e43aafd.jsonl \
+  --output data/trajectories/both_no_comp_20261105.jsonl
+```
+
+文件采用JSONL：首行为`schema=aimdk_functions.trajectory.v1`的`metadata`，记录机型、URDF版本、
+`arm_unit=rad`、完整`arm_names`、源日志SHA256、代码/IK配置及导出窗口；
+后续`point`记录`time_s`、14轴`arm_rad`、具名`hand_openings.left/right`（0..1，0闭合、1全开）、
+`source_line`、`source_sequence`及源发布单调时间。读取按`arm_names`重排为左7右7，逐点检查既有限位。
+轨迹源固定为已发送目标，额外位置补偿关闭；开启补偿的源日志已将当时偏置包含在目标中。
+
+同步、构建并加载环境后，在机器人容器工作区根目录执行：
+
+```bash
+# 只读预览不连接ROS；输出首末目标、关节范围、最大相邻步长和轨迹时长。
+ros2 run aimdk_functions upper_body_trajectory run \
+  --trajectory data/trajectories/both_no_comp_20261105.jsonl
+
+# 操作者进入URS/RUNNING并结束其他上肢发布进程后，显式设置起点过渡5秒。
+ros2 run aimdk_functions upper_body_trajectory run \
+  --trajectory data/trajectories/both_no_comp_20261105.jsonl \
+  --start-duration 5 --speed 1 --execute
+```
+
+执行必须显式给出有限正`--start-duration`。首帧使用新鲜HAL双臂命令与夹爪实际开度，
+随后以五次插值在指定时长内过渡到轨迹首点，关节与夹爪使用共同进度。
+起点过渡后以`--speed`倍速推进原轨迹时间，默认1，接受有限正数；起点过渡时长不随倍速改变。
+50Hz发布线程在每次回调中选择当前轨迹时间之前最近的原目标（零阶保持），迟到时直接查当前点，
+保留原关节目标跳变，不补发已经过期的中间点。原轨迹相邻时间可小于20ms，回放不保证逐条重发。
+
+启动模式、反馈故障/时效、源时间推进、±3°起点漂移和80ms发布间隔约束复用现有执行器。
+运动期间跟踪误差仅作观测；末点持续发送并要求双臂新反馈在±5°内连续确认0.3秒，
+最多额外等待2秒，夹爪仅记录开度。失败、中断或完成均停发，不自动返程或切换模式。
+`--timeout`默认5秒（1..10），`--feedback-timeout`默认0.5秒（0.2..1）。
+每条`command_published`另有同序号`trajectory_sample_published`，记录过渡/回放/终点阶段、
+轨迹时间、源点索引、源日志行号与源命令序号；过渡阶段的源点字段为null。
+
+机器人验收先导出短片段并只读预览，核对首末双臂/夹爪值与源日志；执行时确认首帧等于采样值、
+过渡连续、左右臂及夹爪按同一时间轴推进、末点通过既有终点确认。
+再以不同倍速回放，核对轨迹阶段时长为原时长除以倍速，源点关联可读回；
+中断后确认日志停发，实体保持及固件超时行为现场记录。
+回归检查文件为`test/test_upper_body_trajectory.py`，由用户在机器人容器执行。
 
 ## 关节增量
 
