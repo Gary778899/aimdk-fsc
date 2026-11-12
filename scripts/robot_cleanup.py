@@ -61,6 +61,9 @@ def main():
     parser.add_argument(
         "--all", action="store_true", help="同时清空整个项目目录（含源码和构建产物）"
     )
+    parser.add_argument(
+        "--host", default="agi@10.0.1.41", help="SSH 目标，默认 agi@10.0.1.41（有线）"
+    )
     args = parser.parse_args()
     mode = "--execute" if args.execute else "--preview"
     scope = "--all" if args.all else "--data-log"
@@ -72,7 +75,7 @@ def main():
     )
     try:
         result = subprocess.run(
-            ["ssh", "agi@10.0.1.41", "bash", "-s", "--", mode, scope],
+            ["ssh", args.host, "bash", "-s", "--", mode, scope],
             input=REMOTE_SCRIPT,
             text=True,
             check=False,

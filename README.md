@@ -33,8 +33,10 @@ data/、log/、exports/
 1. `机器人：预览同步`：使用 rsync 的 `--dry-run` 查看待同步与待删除内容。
 2. `机器人：推送工作区`：确认预览后，实际推送代码。
 
-当前目标为 `agi@10.0.1.41:/home/agi/aimdk-fsc/`，具体连接与参数以
-[.vscode/tasks.json](.vscode/tasks.json) 为准。
+所有机器人任务启动时选择 SSH 连接，默认有线 `agi@10.0.1.41`，无线为
+`agi@192.168.31.149`；预览和实际推送应选择同一地址。
+远端项目目录统一为 `/home/agi/aimdk-fsc/`，连接选项与参数见
+[.vscode/tasks.json](.vscode/tasks.json) 的 `inputs` 和各任务定义。
 两个任务使用 rsync `--relative` 的 `/./` 分界，将本地 `overlay/src/` 映射到
 机器人 `aimdk-fsc/src/`，将根目录 `scripts/`、`docker/` 分别映射到同名目录。
 只有这三个目录参与同步；厂商副本、`underlay/extra/`、本地研究文档和数据不会被推送。
@@ -115,7 +117,7 @@ ros2 run aimdk_functions upper_body_control --help
 ### 3. 下载数据并保存日志
 
 轨迹上传使用 VS Code 任务`机器人：推送轨迹`，将本地`data/trajectories/`内的内容
-推送到`agi@10.0.1.41:/home/agi/aimdk-fsc/data/trajectories/`，自动创建远端目录。
+推送到所选连接的`/home/agi/aimdk-fsc/data/trajectories/`，自动创建远端目录。
 任务使用`--checksum`比较内容，同路径内容不同时覆盖远端文件，保留远端独有文件；
 本地源目录须已存在。轨迹上传独立于源码同步，使用中的轨迹应在回放结束后更新。
 
@@ -123,9 +125,9 @@ ros2 run aimdk_functions upper_body_control --help
 2. 在本地 VS Code 按需运行 `机器人：下载采集数据` 和 `机器人：下载日志`；清理前应完成所需数据及日志的下载。
 3. 确认各任务正常结束，核对本地会话文件和日志，必要时读回数据。
 
-`机器人：下载采集数据` 将 `agi@10.0.1.41:/home/agi/aimdk-fsc/data/` 内的内容单向下载到
+`机器人：下载采集数据` 将所选连接的 `/home/agi/aimdk-fsc/data/` 内的内容单向下载到
 当前项目根目录的 `data/`，本地目录不存在时会创建；机器人端目录不存在时提示“无数据可下载”并正常结束。
-`机器人：下载日志` 将 `agi@10.0.1.41:/home/agi/aimdk-fsc/log/` 内的全部内容
+`机器人：下载日志` 将所选连接的 `/home/agi/aimdk-fsc/log/` 内的全部内容
 单向下载到本地 `log/`，包括双臂控制 JSONL 日志及该目录内的构建、调试和验证日志。
 下载前应等待相关程序退出、日志写盘；日志任务要求机器人源目录已存在。
 
@@ -154,7 +156,7 @@ ros2 run aimdk_functions upper_body_control --help
 再加载 underlay 和 overlay 环境运行。`/home/agi/aimdk` 不在清理范围内，厂商包无需重建；
 通常无需重新构建镜像或重新创建容器。
 
-连接地址变更时，同时更新 `.vscode/tasks.json` 和 `scripts/robot_cleanup.py`。
+连接地址变更时，更新 `.vscode/tasks.json` 的 `inputs`；清理脚本通过 `--host` 指定地址。
 
 ## 常用命令
 
@@ -168,10 +170,12 @@ podman exec -it aimdk-dev-fsc bash
 
 ### 预览机器人目录清理
 
-在本地项目根目录执行，仅列出待清理内容。
+在本地项目根目录执行，仅列出待清理内容。清理脚本默认连接有线地址，
+无线连接在各清理命令后添加 `--host agi@192.168.31.149`：
 
 ```bash
 python3 scripts/robot_cleanup.py
+python3 scripts/robot_cleanup.py --host agi@192.168.31.149
 ```
 
 ### 执行机器人目录清理

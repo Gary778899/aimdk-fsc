@@ -13,7 +13,7 @@
                 "--info=progress2",
                 "--rsync-path=mkdir -p /home/agi/aimdk-fsc/data/trajectories/ && rsync",
                 "${workspaceFolder}/data/trajectories/",
-                "agi@10.0.1.41:/home/agi/aimdk-fsc/data/trajectories/"
+                "${input:robotHost}:/home/agi/aimdk-fsc/data/trajectories/"
             ],
             "problemMatcher": [],
             "presentation": {
@@ -29,9 +29,10 @@
             "command": "bash",
             "args": [
                 "-c",
-                "ssh agi@10.0.1.41 'if [ -d /home/agi/aimdk-fsc/data ]; then exit 0; elif [ ! -e /home/agi/aimdk-fsc/data ]; then exit 3; else echo \"数据路径不是目录\" >&2; exit 1; fi'\nstatus=$?\nif [ \"$status\" -eq 3 ]; then\n    printf '无数据可下载：机器人 data 目录不存在。\\n'\n    exit 0\nelif [ \"$status\" -ne 0 ]; then\n    exit \"$status\"\nfi\nexec rsync -az --checksum --itemize-changes --human-readable --info=progress2 agi@10.0.1.41:/home/agi/aimdk-fsc/data/ \"$1\"",
+                "ssh \"$2\" 'if [ -d /home/agi/aimdk-fsc/data ]; then exit 0; elif [ ! -e /home/agi/aimdk-fsc/data ]; then exit 3; else echo \"数据路径不是目录\" >&2; exit 1; fi'\nstatus=$?\nif [ \"$status\" -eq 3 ]; then\n    printf '无数据可下载：机器人 data 目录不存在。\\n'\n    exit 0\nelif [ \"$status\" -ne 0 ]; then\n    exit \"$status\"\nfi\nexec rsync -az --checksum --itemize-changes --human-readable --info=progress2 \"$2:/home/agi/aimdk-fsc/data/\" \"$1\"",
                 "download-data",
-                "${workspaceFolder}/data/"
+                "${workspaceFolder}/data/",
+                "${input:robotHost}"
             ],
             "problemMatcher": [],
             "presentation": {
@@ -51,7 +52,7 @@
                 "--itemize-changes",
                 "--human-readable",
                 "--info=progress2",
-                "agi@10.0.1.41:/home/agi/aimdk-fsc/log/",
+                "${input:robotHost}:/home/agi/aimdk-fsc/log/",
                 "${workspaceFolder}/log/"
             ],
             "problemMatcher": [],
@@ -99,7 +100,7 @@
                 "${workspaceFolder}/overlay/./src/",
                 "${workspaceFolder}/./scripts/",
                 "${workspaceFolder}/./docker/",
-                "agi@10.0.1.41:/home/agi/aimdk-fsc/"
+                "${input:robotHost}:/home/agi/aimdk-fsc/"
             ],
             "problemMatcher": [],
             "presentation": {
@@ -146,7 +147,7 @@
                 "${workspaceFolder}/overlay/./src/",
                 "${workspaceFolder}/./scripts/",
                 "${workspaceFolder}/./docker/",
-                "agi@10.0.1.41:/home/agi/aimdk-fsc/"
+                "${input:robotHost}:/home/agi/aimdk-fsc/"
             ],
             "problemMatcher": [],
             "presentation": {
@@ -155,6 +156,18 @@
                 "clear": true,
                 "focus": true
             }
+        }
+    ],
+    "inputs": [
+        {
+            "id": "robotHost",
+            "type": "pickString",
+            "description": "选择机器人 SSH 连接：10.0.1.41（有线）或 192.168.31.149（无线）",
+            "options": [
+                "agi@10.0.1.41",
+                "agi@192.168.31.149"
+            ],
+            "default": "agi@10.0.1.41"
         }
     ]
 }
