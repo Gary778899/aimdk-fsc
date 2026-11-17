@@ -1,20 +1,18 @@
 """Buffered event diagnostics for head_test; disk writes occur outside motion."""
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import time
-import uuid
 
 
 class DiagnosticLog:
     """Collect bounded JSONL events in memory and save them when the run exits."""
 
-    def __init__(self, directory=None, prefix='head_test'):
-        """Create a unique log in directory or the detected workspace log folder.
+    def __init__(self, directory=None):
+        """在 directory 或工作区 log 创建北京时间日志；重名追加短序号。
 
-        Prefix labels the tool in the filename. Raise OSError if the destination cannot be created, or ValueError if the
-        workspace cannot be found and no explicit directory was supplied.
+        未指定目录且无法定位工作区时抛出 ValueError，其他文件错误直接传播。
         """
         if directory is None:
             candidates = (Path.cwd(), *Path.cwd().parents,
@@ -27,23 +25,29 @@ class DiagnosticLog:
             directory = root / 'log'
         directory = Path(directory).expanduser().resolve()
         directory.mkdir(parents=True, exist_ok=True)
-        label = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
-        self.path = directory / f'{prefix}_{label}_{uuid.uuid4().hex[:8]}.jsonl'
-        self.stream = self.path.open('x', encoding='utf-8')
+        label = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d_%H%M%S')
+        index = 0
+        while True:
+            self.path = directory / (label + (f'_{index}' if index else '') + '.jsonl')
+            try:
+                self.stream = self.path.open('x', encoding='utf-8')
+                break
+            except FileExistsError:
+                index += 1
         self.started = time.monotonic()
         self.events = deque(maxlen=20000)
         self.total = 0
         self.record('log_open', path=str(self.path), buffered=True)
 
     def record(self, event, **fields):
-        """Buffer an event with UTC wall time and monotonic elapsed seconds."""
+        """缓冲 event 及 fields，保留墙钟纳秒和单调经过秒数。"""
         now = time.monotonic()
         self.events.append(dict(event=event, elapsed_s=now-self.started,
                                 monotonic_s=now, wall_time_ns=time.time_ns(), **fields))
         self.total += 1
 
     def close(self):
-        """Save buffered events and any truncation count; close the file once."""
+        """保存缓冲事件及截断计数，关闭文件；重复调用直接返回。"""
         if self.stream.closed:
             return
         self.record('log_close', dropped_events=max(0, self.total + 1 - self.events.maxlen))

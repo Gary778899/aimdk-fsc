@@ -80,7 +80,8 @@ def run_recording(options, observer=None):
             raise ValueError('--duration须为有限正秒数')
         config = InputConfig.load(options.input_config)
         source = SDKSource(options.sdk_library)
-        log = XRLog(options.output, device_id=options.device_id, input_config=asdict(config),
+        log = XRLog(options.output, unique_path=getattr(options, 'unique_path', False),
+                    device_id=options.device_id, input_config=asdict(config),
                     sdk_library=str(source.library_path),
                     sdk_sha256=hashlib.sha256(source.library_path.read_bytes()).hexdigest(),
                     input_config_sha256=hashlib.sha256(Path(options.input_config).read_bytes()).hexdigest(),

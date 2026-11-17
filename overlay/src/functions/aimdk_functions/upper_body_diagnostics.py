@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 import time
 import threading
-import uuid
+from .recording_paths import create_recording
 
 
 def json_value(value):
@@ -47,10 +47,7 @@ class UpperBodyLog:
 
     def __init__(self, directory, **metadata):
         """在指定 directory 创建独立文件并记录版本等 metadata；文件错误直接传播。"""
-        directory = Path(directory).expanduser().resolve()
-        directory.mkdir(parents=True, exist_ok=True)
-        self.path = directory / f'upper_body_{time.time_ns()}_{uuid.uuid4().hex[:8]}.jsonl'
-        self.stream = self.path.open('x', encoding='utf-8')
+        self.path, self.stream = create_recording(directory, suffix='.jsonl')
         self.lock = threading.RLock()
         self.started = time.monotonic()
         try:

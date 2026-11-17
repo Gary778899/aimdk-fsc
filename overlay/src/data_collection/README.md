@@ -1,6 +1,6 @@
 # data_collection 使用说明
 
-版本 `0.3.0`，适用于机器人 Ubuntu 22.04／ROS 2 Humble、AimDK 1.1 和 X2 Ultra。双臂／夹爪静态录制及 MCAP 读回已验证；full 多模态接入已读回，但存在队列丢弃。新增全身关节来源与在线耗时统计待机器人容器验证。
+版本 `0.3.0`，适用于机器人 Ubuntu 22.04／ROS 2 Humble、AimDK 1.1 和 X2 Ultra。双臂／夹爪静态录制及 MCAP 读回已验证；full 多模态接入已读回，但存在队列丢弃。新增全身关节来源、骨盆 IMU 与在线耗时统计待机器人容器验证。
 
 ## 功能与数据范围
 
@@ -17,9 +17,14 @@
 | `legs` | `/aima/hal/joint/leg/state` | `aimdk_msgs/msg/JointStateArray` |
 | `arm_commands` | `/aima/hal/joint/arm/command` | `aimdk_msgs/msg/JointCommandArray` |
 | `imu_chest` | `/aima/hal/imu/chest/state` | `sensor_msgs/msg/Imu` |
+| `imu_pelvis` | `/aima/hal/imu/torso/state` | `sensor_msgs/msg/Imu` |
 | `head_rgb`、`head_depth` | `/aima/hal/sensor/rgbd_head_front/rgb_image`、`depth_image` | `sensor_msgs/msg/Image` |
 | `wrist_left_rgb`、`wrist_left_depth` | `/wrist/left/color/image_rect_raw`、`/wrist/left/depth/image_rect_raw` | `sensor_msgs/msg/Image` |
 | `wrist_right_rgb`、`wrist_right_depth` | `/wrist/right/color/image_rect_raw`、`/wrist/right/depth/image_rect_raw` | `sensor_msgs/msg/Image` |
+
+骨盆 IMU 沿用现有[上肢反馈订阅](../functions/aimdk_functions/upper_body_ros.py)中的话题映射：
+SDK 将 `/aima/hal/imu/torso/state` 标注为腰部 IMU，项目将其作为 pelvis IMU 使用，
+现有实机记录的 `frame_id` 为 `base_link`。采集保留原始 `header`、姿态、角速度、线加速度及协方差，不转换坐标系。
 
 每路图像自动附带 `<来源ID>_info`，类型为 `sensor_msgs/msg/CameraInfo`。头部对应 `rgb_camera_info`／`depth_camera_info`，腕部对应 `color/camera_info`／`depth/camera_info`。RGB 与深度可分别选择。扩展同类型来源时修改目录与预设；新增消息结构时补充显式类型适配。
 
@@ -89,26 +94,33 @@ source /home/agi/aimdk-fsc/install/local_setup.bash
 | 预设 | 内容 |
 | --- | --- |
 | `upper_body`（默认） | 双臂、夹爪反馈 |
-| `whole_body_imu` | 头部、双臂、腰部、双腿、夹爪反馈，以及胸部 IMU；共 6 个话题 |
+| `whole_body_imu` | 头部、双臂、腰部、双腿、夹爪反馈，以及胸部、骨盆 IMU；共 7 个话题 |
 | `manipulation` | 双臂、夹爪、HAL 手臂指令、头部 RGBD、双腕 RGB |
 | `camera_check` | 头部 RGBD、双腕 RGB |
-| `full` | 全部关节反馈、HAL 手臂指令、胸部 IMU、头部与双腕 RGBD，以及图像内参 |
+| `full` | 全部关节反馈、HAL 手臂指令、胸部及骨盆 IMU、头部与双腕 RGBD，以及图像内参 |
 
 ```bash
 ros2 launch data_collection data_collection.launch.py \
   data_root:=/home/agi/aimdk-fsc/data profile:=manipulation
 ```
 
-本轮只采全身关节反馈和胸部 IMU，使用：
+采集全身关节反馈及胸部、骨盆 IMU，使用：
 
 ```bash
 ros2 launch data_collection data_collection.launch.py \
   data_root:=/home/agi/aimdk-fsc/data profile:=whole_body_imu
 ```
 
-该预设不创建相机订阅或启动腕部驱动，按原频率保存六路反馈。录制前同步并重新构建 `data_collection`，加载 overlay 环境，再沿用 START／STATUS／STOP。头部、腰部和双腿仍需核对真机实际发布者与完整关节名称；按原始消息保留全部关节，不硬编码数量或数组槽位。所选来源未收到消息时按既有规则报告缺流，不自动跳过。
+该预设不创建相机订阅或启动腕部驱动，按原频率保存七路反馈。录制前同步并重新构建 `data_collection`，加载 overlay 环境，再沿用 START／STATUS／STOP。头部、腰部和双腿仍需核对真机实际发布者与完整关节名称；按原始消息保留全部关节，不硬编码数量或数组槽位。所选来源未收到消息时按既有规则报告缺流，不自动跳过。
 
-无图像会显著降低输入负载，零丢弃仍以本轮 STATUS、收尾计数和 MCAP 读回为依据。STOP 后核对六路均有数据、submitted=written、dropped=0、队列排空，并核对原始关节名称、状态／故障、源时间和 IMU 字段。完整性标记的含义见下文会话状态说明。
+无图像会显著降低输入负载，零丢弃仍以本轮 STATUS、收尾计数和 MCAP 读回为依据。STOP 后核对七路均有数据、submitted=written、dropped=0、队列排空，并核对原始关节名称、状态／故障、源时间和 IMU 字段。完整性标记的含义见下文会话状态说明。
+
+仅录骨盆 IMU 时使用：
+
+```bash
+ros2 launch data_collection data_collection.launch.py \
+  data_root:=/home/agi/aimdk-fsc/data streams:=imu_pelvis
+```
 
 也可用逗号分隔的 `streams` 覆盖预设。例如只录左腕 RGB 和双臂反馈：
 
@@ -155,7 +167,7 @@ STATUS 包含 `recording_enabled`、会话目录、队列条数／序列化消�
 
 ## 存储与读回
 
-每次 START 创建独立的 `data_<北京时间日期>_<时分秒>_<九位纳秒>_UTCp0800_<PID>_<序号>/`。日期由系统会话开始时间生成，固定 UTC+08:00；历史目录名保留。
+每次 START 按开始记录时的北京时间创建 `YYYYMMDD_HHMMSS/`，如 `20261117_143025/`。同目录重名时追加 `_1`、`_2` 等递增序号；历史目录名保留。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -196,21 +208,21 @@ write 调用内部同时包含 MCAP 缓冲、块压缩和文件写入；close �
 
 ```bash
 ros2 run data_collection benchmark_collection_io \
-  /home/agi/aimdk-fsc/data/data_20261112_205504_235385543_UTCp0800_115218_0
+  /home/agi/aimdk-fsc/data/20261117_143025
 ```
 
 也可直接运行同步后的脚本，无需为该脚本单独构建：
 
 ```bash
 python3 src/data_collection/scripts/benchmark_collection_io.py \
-  /home/agi/aimdk-fsc/data/data_20261112_205504_235385543_UTCp0800_115218_0
+  /home/agi/aimdk-fsc/data/20261117_143025
 ```
 
 默认测量全部块；首次快速检查可增加 `--max-chunks 100`。`--zstd-level` 默认 `-3`，对应 MCAP Fast 的数值级别，依据 [MCAP 压缩级别映射](https://github.com/foxglove/mcap/blob/releases/cpp/v1.1.0/cpp/mcap/include/mcap/writer.inl#L195)。脚本从系统 libzstd 读取版本并写入结果，当前不自动替换录制配置。
 
 流程为逐块读取并解压，在计时区间外分配缓冲，再分别计时 ZSTD_compress2、文件 write，最后单独测量一次 fsync。文件 write 可能只写入页缓存；fsync 耗时单列，并计入汇总写入吞吐。读取、解压、内存分配、诊断日志和 MCAP 索引处理不计入阶段吞吐；读源文件与诊断文件仍会竞争同一磁盘。此结果是离线基准，不是原录制过程中压缩和 I/O 的精确拆分，也不是纯磁盘设备性能测试。
 
-输出默认为来源会话内的 `io_benchmark_<时间>/`，包含 `chunks.jsonl` 和 `summary.json`，随现有数据下载流程取回。临时文件也放在该目录的文件系统，结束时自动删除；测试期间需要容纳一次重新压缩输出的空间。可用 `--output-dir` 指定新的结果目录及目标写入磁盘，原始 MCAP 保持不变。不要与正式录制同时运行此基准。
+输出默认为来源会话内的 `YYYYMMDD_HHMMSS/`（基准开始时的北京时间，重名追加短序号），包含 `chunks.jsonl` 和 `summary.json`，随现有数据下载流程取回。临时文件也放在该目录的文件系统，结束时自动删除；测试期间需要容纳一次重新压缩输出的空间。可用 `--output-dir` 指定新的结果目录及目标写入磁盘，原始 MCAP 保持不变。不要与正式录制同时运行此基准。
 
 结果重点查看 compression_input_MB_per_s、write_output_MB_per_s_including_final_fsync、combined_stage_input_MB_per_s，以及阶段 CPU／墙钟耗时。原始输入吞吐与压缩后输出吞吐的计量基准不同，比较时使用相应字节数；本次 full 仅图像约 230.4 MB/s，可作为负载量级参考，不新增通过／中止门槛。
 
@@ -218,7 +230,7 @@ python3 src/data_collection/scripts/benchmark_collection_io.py \
 
 ## 容器验收
 
-1. 使用 whole_body_imu：确认六个预期话题均有数据，头部／腰部／双腿关节完整名称可读回，反馈／IMU 数值与原始状态保留，逐话题无丢弃且正常收尾。
+1. 使用 whole_body_imu：确认七个预期话题均有数据，包含 `/aima/hal/imu/chest/state` 和 `/aima/hal/imu/torso/state`，头部／腰部／双腿关节完整名称可读回，反馈／IMU 数值与原始状态保留，逐话题无丢弃且正常收尾。
 2. 默认预设录制：确认仅双臂／夹爪两个话题，原始关节名称、错误及时间字段读回一致，新目录不生成 frames.jsonl。
 3. 单独选择 `wrist_left_rgb`：确认仅左腕彩色流及内参写入，右腕不由本入口启动，独立相机会话能正常 STOP 和读回。
 4. 使用 `manipulation`，再复用已启动驱动：确认头部 RGBD、双腕 RGB、反馈及指令逐话题有数据，内参存在；抽查图像与深度编码及标定内容。

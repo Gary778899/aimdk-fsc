@@ -2,7 +2,6 @@
 """按 SD/URS 标签只读记录运控拓扑、模式、上肢命令及反馈，供离线分析。"""
 
 import argparse
-from datetime import datetime, timezone
 import json
 import math
 import os
@@ -10,7 +9,7 @@ from pathlib import Path
 import platform
 import sys
 import time
-import uuid
+from .recording_paths import create_recording
 
 
 MODES = {'SD': 'STAND_DEFAULT', 'URS': 'UPPERBODY_REMOTE_SPLIT'}
@@ -84,9 +83,7 @@ def session_directory(args):
         if workspace is None:
             raise ValueError('无法定位工作区，请传入 --log-dir /实际工作区/log')
         root = workspace / 'log'
-    label = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
-    directory = root.expanduser().resolve() / f'arm_probe_{args.tag}_{label}_{uuid.uuid4().hex[:8]}'
-    directory.mkdir(parents=True, exist_ok=False)
+    directory, _ = create_recording(root)
     return directory
 
 

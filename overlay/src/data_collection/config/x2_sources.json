@@ -73,6 +73,16 @@
       }
     },
     {
+      "id": "imu_pelvis",
+      "topic": "/aima/hal/imu/torso/state",
+      "message_type": "sensor_msgs/msg/Imu",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      }
+    },
+    {
       "id": "head_rgb",
       "topic": "/aima/hal/sensor/rgbd_head_front/rgb_image",
       "message_type": "sensor_msgs/msg/Image",

@@ -1,21 +1,18 @@
 #include "data_collection/session_writer.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
-#include <iomanip>
 #include <map>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <utility>
-#include <unistd.h>
 
 #include <rclcpp/time.hpp>
 #include <rmw/rmw.h>
@@ -80,7 +77,6 @@ std::string session_time_label(int64_t system_ns)
 {
   const auto elapsed = std::chrono::nanoseconds(system_ns);
   const auto seconds = std::chrono::floor<std::chrono::seconds>(elapsed);
-  const auto nanoseconds = (elapsed - seconds).count();
   // 固定加八小时后按 UTC 格式化，避免受到容器默认时区影响。
   const auto beijing_seconds = static_cast<std::time_t>(seconds.count() + 8 * 60 * 60);
   std::tm calendar{};
@@ -90,10 +86,7 @@ std::string session_time_label(int64_t system_ns)
   {
     throw std::runtime_error("cannot format session start time");
   }
-  std::ostringstream label;
-  label << date_time << '_' << std::setfill('0') << std::setw(9) << nanoseconds <<
-    "_UTCp0800";
-  return label.str();
+  return date_time;
 }
 
 /** @brief 将计数器初始化为提交、成功写入、丢弃均为零的对象。 */
@@ -191,18 +184,12 @@ public:
     try {
       std::filesystem::create_directories(root_);
       const auto time_label = session_time_label(started_ns_);
-      static std::atomic<uint64_t> sequence{0};
       std::filesystem::path selected;
-      for (std::size_t attempt = 0; attempt != 100; ++attempt) {
-        selected = root_ / ("data_" + time_label + "_" +
-          std::to_string(getpid()) + "_" + std::to_string(sequence.fetch_add(1)));
+      for (uint64_t index = 0; ; ++index) {
+        selected = root_ / (time_label + (index == 0 ? "" : "_" + std::to_string(index)));
         if (std::filesystem::create_directory(selected)) {
           break;
         }
-        selected.clear();
-      }
-      if (selected.empty()) {
-        throw std::runtime_error("cannot allocate a unique session directory");
       }
       {
         std::lock_guard<std::mutex> lock(mutex_);

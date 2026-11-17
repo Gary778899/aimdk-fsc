@@ -24,6 +24,7 @@ ros2 run aimdk_functions upper_body_control --help
 ```
 
 默认日志位于检测到的工作区`log/`，无法探测时显式指定`--log-dir`。
+头部及上肢日志使用开始记录时的北京时间 `YYYYMMDD_HHMMSS.jsonl`，重名追加 `_1`、`_2` 等短序号。
 同步排除规则保护构建和安装产物，源码删除不会清理旧模块；容器内核实实际安装布局及包来源后，定向清理已移除的旧入口和模块，重新构建并检查`ros2 pkg executables aimdk_test`仅列出上表两个入口。
 本次清理仅完成本地静态检查，尚未在机器人容器构建或验证。
 
@@ -44,7 +45,7 @@ ros2 run aimdk_test upper_body_command_watch --duration 60
 
 先在已进入 URS 的状态下启动观察，再在另一个已加载相同环境的终端启动运动实验，
 用实验日志与观察日志的时间戳对照接管前后变化。默认观察30秒，`--duration 0` 持续到 Ctrl-C。
-日志默认位于工作区 `log/upper_body_*.jsonl`，metadata.command 为 `upper_body_command_watch`；
+日志默认位于工作区 `log/YYYYMMDD_HHMMSS[_序号].jsonl`，metadata.command 为 `upper_body_command_watch`；
 可用 `--log-dir` 指定目录。新增入口需要用户同步后在容器重新构建。
 
 脚本创建两个只读订阅，使用 BEST_EFFORT/VOLATILE、depth=100；记录从订阅建立后实际收到的消息，

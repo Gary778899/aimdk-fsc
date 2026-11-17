@@ -11,6 +11,13 @@ ROS 2 包名为 `aimdk_functions`，使用 `ament_python`，依赖 NumPy >=1.21�
 历史命令、参数和实机结果见[整理前说明](../../../docs/archive/upper_body_commands_before_unification_20261030.md)
 与[上肢验证记录](../../../docs/archive/x2_upper_body_validation_20261029.md)。
 
+## 记录命名
+
+自动生成的上肢 JSONL 日志、验收会话目录、补偿探测会话目录及腕部快照目录，
+使用开始记录时的北京时间 `YYYYMMDD_HHMMSS`，如 `20261117_143025.jsonl`。
+同目录重名时追加 `_1`、`_2` 等递增序号，保留文件扩展名。日志内容继续记录命令与实验标签。
+显式指定的输出文件名及会话内部的固定文件名沿用原约定，历史文件保持原名。
+
 ## 构建与入口
 
 用户通过现有任务同步后，在机器人 Humble 容器工作区根目录执行：
@@ -54,7 +61,7 @@ ros2 launch aimdk_functions wrist_cameras.launch.py
 
 单帧检查：另一个容器终端加载同样环境后，执行
 `ros2 run aimdk_functions wrist_camera_snapshot`，将左右各一张彩色 PNG 和 `manifest.json`
-保存到当前目录下 `data/images/<UTC时间>/`；通过“机器人：下载采集数据”任务下载。
+保存到当前目录下 `data/images/YYYYMMDD_HHMMSS/`；通过“机器人：下载采集数据”任务下载。
 两路分别取首帧，清单保留各自源时间戳和接收时间；连续录制及与关节数据的时间对齐尚未实现。
 
 ## 上肢入口整理
@@ -181,7 +188,7 @@ JSON格式版本为`schema_version=1`，记录`robot_model=x2-ultra`、`urdf_ver
 机器人路径为`/home/agi/aimdk-fsc/data/trajectories/`；`data/`受现有同步排除保护，
 本地导出的文件使用“机器人：推送轨迹”任务上传，源码同步不会上传。
 备份复用“机器人：下载采集数据”任务。
-原始遥操日志保留在`log/`，回放执行日志沿用工作区`log/upper_body_*.jsonl`。
+原始遥操日志保留在`log/`，回放执行日志沿用工作区`log/YYYYMMDD_HHMMSS[_序号].jsonl`。
 
 `export`不导入ROS，从`upper_body_teleop_observe`日志提取`command_published.arm_rad`
 和`hand_openings`。时间轴使用`publish_begin_monotonic_s`，要求原日志具有此字段且时间严格推进。
@@ -374,7 +381,7 @@ ROS时钟停滞上限沿用0.2秒。仅命令使用当前ROS时间，不改写�
 不超过5°的动作可能在实际运动很小时满足确认，不能据此认定精确执行了输入增量。
 `--timeout`还用于启动反馈、服务发现/响应与DDS匹配的各自有界等待。
 
-日志默认在自动探测的工作区 `log/upper_body_*.jsonl`，失败时用 `--log-dir`明确指定。
+日志默认在自动探测的工作区 `log/YYYYMMDD_HHMMSS[_序号].jsonl`，失败时用 `--log-dir`明确指定。
 ROS节点创建后立即建立反馈订阅，先于模式查询和运动学模型初始化；收到反馈即写入日志。
 `feedback_subscription_ready`标记订阅就绪，首条`feedback`标记实际开始收到数据。
 首次接收仍取决于ROS初始化与DDS发现；规划计算期间按现有单线程回调处理，不保证连续无丢帧采集。
@@ -517,7 +524,7 @@ ros2 run aimdk_functions upper_body_teleop_replay \
 零增量保持种子；FK残差记录到日志。输入映射和IK均预检通过后才联合提交。
 `OnlineTargetStore`保存完整目标、关联输入序号和单调接受时间，执行模式的发布侧读取同一快照。
 
-输出沿用工作区`log/upper_body_*.jsonl`，记录真实快照、配置哈希、模型及TCP来源、XR输入、
+输出沿用工作区`log/YYYYMMDD_HHMMSS[_序号].jsonl`，记录真实快照、配置哈希、模型及TCP来源、XR输入、
 映射目标、双侧候选、残差、耗时和接受／拒绝原因。局部IK空解按[保持与恢复](#ik无解保持与恢复)处理；
 其他错误停止回放，退出码1。成功接受至少一帧并完成读回后退出0。
 当前入口不验证50Hz发布调度或实体跟随。容器内可单独运行状态契约检查：
@@ -704,7 +711,7 @@ bash scripts/build_overlay.sh remote_control aimdk_functions
 source /home/agi/aimdk/install/setup.bash
 source /home/agi/aimdk-fsc/install/local_setup.bash
 
-TELEOP_LOG_DIR="/home/agi/aimdk-fsc/log/teleop_$(date +%Y%m%d_%H%M%S)"
+TELEOP_LOG_DIR="/home/agi/aimdk-fsc/log/$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)"
 ros2 run aimdk_functions upper_body_teleop_observe \
   --device-id TestDevice \
   --input-config /home/agi/aimdk-fsc/src/remote_control/config/input.json \
@@ -715,7 +722,7 @@ ros2 run aimdk_functions upper_body_teleop_observe \
   --timeout 10 --input-timeout 0.5 --duration 60 --display-interval 1 \
   --load-description 'gripper，空载' --execute
 
-TELEOP_IK_LOGS=("$TELEOP_LOG_DIR"/upper_body_*.jsonl)
+TELEOP_IK_LOGS=("$TELEOP_LOG_DIR"/[0-9]*.jsonl)
 ros2 run aimdk_functions upper_body_teleop_stats "${TELEOP_IK_LOGS[0]}"
 ```
 

@@ -2,7 +2,7 @@
 
 import argparse
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import math
 import os
@@ -11,7 +11,6 @@ import signal
 import socket
 import subprocess
 import time
-from uuid import uuid4
 
 from .cli import run_recording
 from .protocol import InputConfig
@@ -41,7 +40,7 @@ def watch_service(script, log_path, timeout):
     process = None
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open('w', encoding='utf-8') as output:
+    with log_path.open('a', encoding='utf-8') as output:
         try:
             script = Path(script).resolve()
             if not script.is_file():
@@ -194,9 +193,22 @@ def watch_main(args=None):
         if options.duration is not None and (not math.isfinite(options.duration) or options.duration <= 0):
             raise ValueError('--duration须为有限正秒数')
         InputConfig.load(options.input_config)
-        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
-        stem = Path(options.log_dir) / f'xr_watch_{stamp}_{uuid4().hex[:8]}'
+        stamp = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d_%H%M%S')
+        directory = Path(options.log_dir).expanduser().resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        index = 0
+        while True:
+            stem = directory / (stamp + (f'_{index}' if index else ''))
+            if not stem.with_suffix('.jsonl').exists():
+                try:
+                    # 独占预留服务日志，使同秒启动的监听器使用不同名称。
+                    with stem.with_suffix('.service.log').open('x', encoding='utf-8'):
+                        break
+                except FileExistsError:
+                    pass
+            index += 1
         options.output = str(stem.with_suffix('.jsonl'))
+        options.unique_path = True
         with watch_service(options.service_script, stem.with_suffix('.service.log'),
                            options.service_start_timeout):
             return run_recording(options, observer=observer)

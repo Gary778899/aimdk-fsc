@@ -11,7 +11,7 @@ import signal
 import subprocess
 import sys
 import time
-import uuid
+from .recording_paths import create_recording
 
 
 def ask(message, default=''):
@@ -21,7 +21,7 @@ def ask(message, default=''):
 
 def read_events(directory):
     """读取一个用例目录中的控制器JSONL；格式损坏直接报错，不把缺失记录视为通过。"""
-    return [json.loads(line) for path in sorted(directory.glob('upper_body_*.jsonl'))
+    return [json.loads(line) for path in sorted(directory.glob('*.jsonl'))
             for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
 
 
@@ -105,9 +105,7 @@ class AcceptanceSession:
         from .upper_body_kinematics.parameters import parameter_report
 
         self.options = options
-        self.root = log_directory(options.log_dir) / (
-            time.strftime('upper_body_acceptance_%Y%m%dT%H%M%S_') + uuid.uuid4().hex[:8])
-        self.root.mkdir(parents=True)
+        self.root, _ = create_recording(log_directory(options.log_dir))
         self.data = dict(schema_version=1, started=time.strftime('%Y-%m-%dT%H:%M:%S%z'),
                          options=vars(options), python=sys.version, platform=platform.platform(),
                          ros_distro=os.environ.get('ROS_DISTRO', 'unknown'),
@@ -323,7 +321,7 @@ class AcceptanceSession:
 
         source = self.options.snapshot_log
         if not source:
-            paths = sorted((self.root / 'fk_ik').glob('upper_body_*.jsonl'))
+            paths = sorted((self.root / 'fk_ik').glob('*.jsonl'))
             source = str(paths[0]) if paths else ask('步骤3：已有实际快照JSONL路径；空行跳过')
         if not source:
             return

@@ -9,6 +9,8 @@ from pathlib import Path
 import sys
 import time
 
+from .recording_paths import create_recording
+
 import cv2
 from cv_bridge import CvBridge
 import numpy as np
@@ -85,8 +87,7 @@ def save_images(config, topics, frames, output_root):
     output_root 是保存根目录。转换、写盘或读回校验失败时抛出异常；失败目录保留。
     """
     captured_at = datetime.now(timezone.utc)
-    output_dir = output_root.expanduser().resolve() / captured_at.strftime('%Y%m%dT%H%M%S%fZ')
-    output_dir.mkdir(parents=True)
+    output_dir, _ = create_recording(output_root, started=captured_at)
     bridge = CvBridge()
     records = {}
     for side, (message, received_ns) in frames.items():

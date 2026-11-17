@@ -4,7 +4,7 @@
 import argparse
 import ctypes
 import ctypes.util
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -133,9 +133,19 @@ def main():
     paths = sorted((session/'raw').glob('*.mcap'))
     if not paths:
         parser.error('来源会话 raw/ 中没有 MCAP 文件')
-    output = options.output_dir or session / ('io_benchmark_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
-    output = output.resolve()
-    output.mkdir(parents=True, exist_ok=False)
+    if options.output_dir:
+        output = options.output_dir.resolve()
+        output.mkdir(parents=True, exist_ok=False)
+    else:
+        label = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d_%H%M%S')
+        index = 0
+        while True:
+            output = session / (label + (f'_{index}' if index else ''))
+            try:
+                output.mkdir()
+                break
+            except FileExistsError:
+                index += 1
     codec = Zstd(options.zstd_level)
     totals = dict(chunks=0, raw_bytes=0, compressed_bytes=0,
                   compression_wall_ns=0, compression_cpu_ns=0,

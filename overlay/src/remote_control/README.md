@@ -38,7 +38,8 @@ ros2 run remote_control xr_watch
 `receive_hz`按本显示窗口完整帧的接收单调时间计算`(N-1)/(t_last-t_first)`，不足两帧为null。
 显示节奏与输入接收节奏独立，全部回调和完整帧按FIFO写入日志。
 
-默认每次启动创建`/home/agi/aimdk-fsc/log/xr_watch_<UTC时间>_<随机标识>.jsonl`，
+默认每次启动以开始记录时的北京时间创建`/home/agi/aimdk-fsc/log/YYYYMMDD_HHMMSS.jsonl`，
+重名追加 `_1`、`_2` 等短序号；服务启动日志使用同名的 `.service.log`。
 从启动起保存原始回调，包含尚无头显时的服务连接事件；收到所选设备的完整帧后保存标准XR帧。
 设备离线或Service断开时清除显示缓存、记录失联并继续等待SDK后续事件。
 头显重新连接并发送时恢复显示与记录；运行中不自动重启Service，Service重启后的SDK自动重连待现场验证。

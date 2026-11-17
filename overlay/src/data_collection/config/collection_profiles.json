@@ -9,7 +9,8 @@
     "waist",
     "legs",
     "hands",
-    "imu_chest"
+    "imu_chest",
+    "imu_pelvis"
   ],
   "manipulation": [
     "arms",
@@ -34,6 +35,7 @@
     "legs",
     "arm_commands",
     "imu_chest",
+    "imu_pelvis",
     "head_rgb",
     "head_depth",
     "wrist_left_rgb",
