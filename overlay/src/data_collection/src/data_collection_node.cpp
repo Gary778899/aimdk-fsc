@@ -2,12 +2,15 @@
 
 #include <chrono>
 #include <cctype>
-#include <cmath>
 #include <fstream>
-#include <functional>
-#include <limits>
+#include <set>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
+#include <aimdk_msgs/msg/joint_command_array.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 
 #include <rclcpp/serialization.hpp>
 #include <zmq.hpp>
@@ -29,61 +32,6 @@ int64_t monotonic_now_ns()
 {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
-/** @brief 保留 SDK 时间的秒及纳秒，不替换零时间。
- * @param time SDK 时间。 @return 原字段对象。
- */
-Json time_json(const builtin_interfaces::msg::Time & time)
-{
-  return Json{{"sec", time.sec}, {"nanosec", time.nanosec}};
-}
-
-/** @brief 完整保留 SDK 消息头。 @param header 原消息头。 @return 消息头对象。 */
-Json header_json(const aimdk_msgs::msg::MessageHeader & header)
-{
-  return Json{{"stamp", time_json(header.stamp)}, {"meas_stamp", time_json(header.meas_stamp)},
-    {"sequence", header.sequence}, {"frame_id", header.frame_id}};
-}
-
-/** @brief 转换双臂反馈，不重排、不裁剪、不过滤故障。
- * @param message SDK 双臂状态。 @return 可由 JSON 路径寻址的对象。
- */
-Json arm_json(const aimdk_msgs::msg::JointStateArray & message)
-{
-  Json joints = Json::array();
-  for (const auto & joint : message.joints) {
-    joints.push_back(Json{{"name", joint.name}, {"position", joint.position},
-      {"velocity", joint.velocity}, {"effort", joint.effort}, {"error_code", joint.error_code}});
-  }
-  return Json{{"header", header_json(message.header)}, {"state", {{"value", message.state.value}}},
-    {"joints", std::move(joints)}};
-}
-
-/** @brief 转换一侧手部数组，保留 SDK 名称及数组顺序。
- * @param hands SDK 手部状态。 @return 原始手部对象数组。
- */
-Json hands_json(const std::vector<aimdk_msgs::msg::HandState> & hands)
-{
-  Json result = Json::array();
-  for (const auto & hand : hands) {
-    result.push_back(Json{{"name", hand.name}, {"position", hand.position},
-      {"velocity", hand.velocity}, {"effort", hand.effort},
-      {"state", hand.state}, {"faultcode", hand.faultcode}});
-  }
-  return result;
-}
-
-/** @brief 转换双夹爪反馈；本阶段不提取触觉，原始 MCAP 仍保留整条消息。
- * @param message SDK 双手状态。 @return 原消息头、手型及状态字段。
- */
-Json hand_json(const aimdk_msgs::msg::HandStateArray & message)
-{
-  return Json{{"header", header_json(message.header)},
-    {"left_hand_type", {{"value", message.left_hand_type.value}}},
-    {"right_hand_type", {{"value", message.right_hand_type.value}}},
-    {"left_hands", hands_json(message.left_hands)},
-    {"right_hands", hands_json(message.right_hands)}};
 }
 
 /** @brief 按配置创建 QoS，未知参数拒绝启动。
@@ -116,15 +64,12 @@ rclcpp::QoS configured_qos(const Json & settings)
   return qos;
 }
 
-/** @brief 按需序列化完整 SDK 消息。 @tparam Message 消息类型。
- * @param message 原消息。 @param enabled 原始录制开关。 @return 消息或空指针。
+/** @brief 序列化完整消息。 @tparam Message 消息类型。
+ * @param message 原消息。 @return 独占序列化消息。
  */
 template<typename Message>
-std::shared_ptr<rclcpp::SerializedMessage> serialize_raw(const Message & message, bool enabled)
+std::shared_ptr<rclcpp::SerializedMessage> serialize_raw(const Message & message)
 {
-  if (!enabled) {
-    return nullptr;
-  }
   auto serialized = std::make_shared<rclcpp::SerializedMessage>();
   rclcpp::Serialization<Message> serialization;
   serialization.serialize_message(&message, serialized.get());
@@ -138,7 +83,6 @@ DataCollectionNode::DataCollectionNode(const rclcpp::NodeOptions & options)
 {
   const auto mapping_file = declare_parameter<std::string>("mapping_file", "");
   const auto data_root = declare_parameter<std::string>("data_root", "");
-  record_raw_ = declare_parameter<bool>("record_raw_mcap", false);
   const auto queue_capacity = declare_parameter<int64_t>("queue_capacity", 512);
   const auto bind_address = declare_parameter<std::string>("zmq_bind_address", "127.0.0.1");
   const auto port = declare_parameter<int>("zmq_port", 5555);
@@ -154,29 +98,45 @@ DataCollectionNode::DataCollectionNode(const rclcpp::NodeOptions & options)
     throw std::runtime_error("Cannot open mapping file: " + mapping_file);
   }
   mapping_ = Json::parse(input);
-  mapper_ = std::make_unique<StateMapper>(mapping_);
-  sample_rate_hz_ = mapping_.at("sample_rate_hz").get<double>();
-  if (!std::isfinite(sample_rate_hz_) || sample_rate_hz_ <= 0.0) {
-    throw std::invalid_argument("sample_rate_hz must be positive and finite");
+  auto selected = declare_parameter<std::vector<std::string>>("selected_streams", {"arms", "hands"});
+  std::set<std::string> requested(selected.begin(), selected.end());
+  for (std::size_t index = 0; index < selected.size(); ++index) {
+    for (const auto & stream : mapping_.at("streams")) {
+      if (stream.at("id") != selected[index]) {continue;}
+      for (const auto & dependency : stream.value("includes", Json::array())) {
+        const auto id = dependency.get<std::string>();
+        if (requested.insert(id).second) {selected.push_back(id);}
+      }
+    }
   }
-  const double period_ns = 1000000000.0 / sample_rate_hz_;
-  // 这里只检查整数纳秒的可表达范围，不设置额外的采集频率门槛。
-  if (!std::isfinite(period_ns) || period_ns < 1.0 ||
-    period_ns >= static_cast<double>(std::numeric_limits<int64_t>::max()))
-  {
-    throw std::invalid_argument("sample_rate_hz produces an unrepresentable sampling period");
+  std::set<std::string> resolved;
+  Json active = Json::array();
+  for (const auto & stream : mapping_.at("streams")) {
+    const auto id = stream.at("id").get<std::string>();
+    if (requested.count(id)) {
+      active.push_back(stream);
+      resolved.insert(id);
+    }
   }
-  const auto period = std::chrono::nanoseconds(static_cast<int64_t>(period_ns));
+  if (requested.empty() || resolved != requested) {
+    throw std::invalid_argument("selected_streams must contain known stream ids");
+  }
+  mapping_["streams"] = active;
+  const auto storage_config = declare_parameter<std::string>("mcap_storage_config", "");
+  if (storage_config.empty()) {
+    throw std::invalid_argument("mcap_storage_config is required for compressed MCAP");
+  }
   const Json metadata{{"sdk_version", DATA_COLLECTION_SDK_VERSION},
     {"code_version_at_build", DATA_COLLECTION_CODE_VERSION}, {"robot_model", model},
     {"firmware", firmware}, {"mapping_file", mapping_file},
+    {"mcap_storage_config", storage_config}, {"selected_streams", selected},
+    {"acquisition", Json::parse(declare_parameter<std::string>("acquisition_metadata_json", "{}"))},
     {"use_sim_time", get_parameter("use_sim_time").as_bool()},
-    {"source_time_clock", "unverified"}, {"sampling_clock", "steady"},
-    {"sample_time_clock", "ROS"}, {"receive_time_clock", "ROS"}};
+    {"source_time_clock", "unverified"}, {"receive_time_clock", "ROS"},
+    {"receive_monotonic_clock", "steady_process_local"}};
   writer_ = std::make_unique<SessionWriter>(
-    mapping_, data_root, record_raw_, static_cast<std::size_t>(queue_capacity), metadata);
+    mapping_, data_root, static_cast<std::size_t>(queue_capacity), metadata);
   create_inputs();
-  sample_timer_ = create_wall_timer(period, std::bind(&DataCollectionNode::sample, this));
   zmq_bind_endpoint_ = "tcp://" + bind_address + ":" + std::to_string(port);
   auto ready = zmq_ready_.get_future();
   zmq_thread_ = std::thread(&DataCollectionNode::zmq_server_loop, this);
@@ -187,16 +147,13 @@ DataCollectionNode::DataCollectionNode(const rclcpp::NodeOptions & options)
     zmq_thread_.join();
     throw;
   }
-  RCLCPP_INFO(get_logger(), "Collector ready: %.3f Hz, control %s, raw MCAP %s",
-    sample_rate_hz_, zmq_bind_endpoint_.c_str(), record_raw_ ? "enabled" : "disabled");
+  RCLCPP_INFO(get_logger(), "Collector ready: %zu sources, control %s, compressed MCAP",
+    mapping_.at("streams").size(), zmq_bind_endpoint_.c_str());
 }
 
 DataCollectionNode::~DataCollectionNode()
 {
   shutdown_requested_.store(true);
-  if (sample_timer_) {
-    sample_timer_->cancel();
-  }
   if (zmq_thread_.joinable()) {
     zmq_thread_.join();
   }
@@ -207,6 +164,54 @@ DataCollectionNode::~DataCollectionNode()
   }
 }
 
+/** @brief 保存标准传感器源时间；图像附带编码与分辨率，异常锁存到当前会话。 */
+template<typename MessageT>
+void DataCollectionNode::on_sensor(const Json & stream, std::shared_ptr<MessageT> message)
+{
+  const auto context = receive_context();
+  if (!context.active) {return;}
+  try {
+    const auto & stamp = message->header.stamp;
+    Json description{{"source_stamp_ns", static_cast<int64_t>(stamp.sec) * 1000000000LL + stamp.nanosec},
+      {"frame_id", message->header.frame_id},
+      {"receive_monotonic_ns", context.monotonic_ns}};
+    if constexpr (std::is_same_v<MessageT, aimdk_msgs::msg::JointStateArray> ||
+      std::is_same_v<MessageT, aimdk_msgs::msg::HandStateArray> ||
+      std::is_same_v<MessageT, aimdk_msgs::msg::JointCommandArray>)
+    {
+      const auto & measured = message->header.meas_stamp;
+      description["meas_stamp_ns"] = static_cast<int64_t>(measured.sec) * 1000000000LL + measured.nanosec;
+      description["sequence"] = message->header.sequence;
+    }
+    if constexpr (std::is_same_v<MessageT, sensor_msgs::msg::Image>) {
+      description["width"] = message->width;
+      description["height"] = message->height;
+      description["encoding"] = message->encoding;
+      description["step"] = message->step;
+      description["is_bigendian"] = message->is_bigendian;
+    }
+    const auto serialize_begin = monotonic_now_ns();
+    auto serialized = serialize_raw(*message);
+    description["serialization_wall_ns"] = monotonic_now_ns() - serialize_begin;
+    accept_raw(stream, std::move(serialized), context, description);
+  } catch (const std::exception & error) {
+    fail_session(error.what(), context.generation);
+  }
+}
+
+void DataCollectionNode::accept_raw(
+  const Json & stream, std::shared_ptr<rclcpp::SerializedMessage> message,
+  const ReceiveContext & context, const Json & description)
+{
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (!recording_enabled_ || generation_ != context.generation || !writer_->is_recording()) {
+    return;
+  }
+  writer_->enqueue_raw(stream.at("topic").get<std::string>(),
+    stream.at("message_type").get<std::string>(), std::move(message), context.time_ns,
+    description);
+}
+
 void DataCollectionNode::create_inputs()
 {
   for (const auto & stream : mapping_.at("streams")) {
@@ -215,20 +220,42 @@ void DataCollectionNode::create_inputs()
     const auto qos = configured_qos(stream.at("qos"));
     // Humble 对 std::bind 的类型推导保留原成员函数参数；用单消息参数的 lambda 适配。
     // 按值捕获当前来源配置，使回调在循环结束后仍持有正确的映射。
-    if (type == "aimdk_msgs/msg/JointStateArray") {
-      /** @brief 将双臂消息交给当前来源的适配器。 @param message SDK 双臂反馈。 */
+    if (type == "sensor_msgs/msg/Image") {
+      /** @brief 转交原始图像，不进行图像编码。 */
+      const auto callback = [this, stream](sensor_msgs::msg::Image::SharedPtr message) {
+          on_sensor(stream, std::move(message));
+        };
+      subscriptions_.push_back(create_subscription<sensor_msgs::msg::Image>(topic, qos, callback));
+    } else if (type == "sensor_msgs/msg/CameraInfo") {
+      /** @brief 转交相机内参。 */
+      const auto callback = [this, stream](sensor_msgs::msg::CameraInfo::SharedPtr message) {
+          on_sensor(stream, std::move(message));
+        };
+      subscriptions_.push_back(create_subscription<sensor_msgs::msg::CameraInfo>(topic, qos, callback));
+    } else if (type == "sensor_msgs/msg/Imu") {
+      /** @brief 转交原始 IMU。 */
+      const auto callback = [this, stream](sensor_msgs::msg::Imu::SharedPtr message) {
+          on_sensor(stream, std::move(message));
+        };
+      subscriptions_.push_back(create_subscription<sensor_msgs::msg::Imu>(topic, qos, callback));
+    } else if (type == "aimdk_msgs/msg/JointStateArray") {
+      /** @brief 转交所配置身体部位的完整原始关节反馈。 */
       const auto callback = [this, stream](aimdk_msgs::msg::JointStateArray::SharedPtr message) {
-          on_arm(stream, std::move(message));
+          on_sensor(stream, std::move(message));
         };
-      subscriptions_.push_back(create_subscription<aimdk_msgs::msg::JointStateArray>(
-        topic, qos, callback));
+      subscriptions_.push_back(create_subscription<aimdk_msgs::msg::JointStateArray>(topic, qos, callback));
     } else if (type == "aimdk_msgs/msg/HandStateArray") {
-      /** @brief 将夹爪消息交给当前来源的适配器。 @param message SDK 双夹爪反馈。 */
+      /** @brief 转交夹爪原始反馈。 */
       const auto callback = [this, stream](aimdk_msgs::msg::HandStateArray::SharedPtr message) {
-          on_hand(stream, std::move(message));
+          on_sensor(stream, std::move(message));
         };
-      subscriptions_.push_back(create_subscription<aimdk_msgs::msg::HandStateArray>(
-        topic, qos, callback));
+      subscriptions_.push_back(create_subscription<aimdk_msgs::msg::HandStateArray>(topic, qos, callback));
+    } else if (type == "aimdk_msgs/msg/JointCommandArray") {
+      /** @brief 只读转交 HAL 原始关节指令。 */
+      const auto callback = [this, stream](aimdk_msgs::msg::JointCommandArray::SharedPtr message) {
+          on_sensor(stream, std::move(message));
+        };
+      subscriptions_.push_back(create_subscription<aimdk_msgs::msg::JointCommandArray>(topic, qos, callback));
     } else {
       throw std::invalid_argument("No input adapter for message_type: " + type);
     }
@@ -246,66 +273,6 @@ DataCollectionNode::ReceiveContext DataCollectionNode::receive_context()
     entry_generation, received_ros, received_monotonic};
 }
 
-void DataCollectionNode::on_arm(
-  const Json & stream, aimdk_msgs::msg::JointStateArray::SharedPtr message)
-{
-  const auto context = receive_context();
-  if (!context.active) {
-    return;
-  }
-  try {
-    accept_message(stream, arm_json(*message), serialize_raw(*message, record_raw_), context);
-  } catch (const std::exception & error) {
-    fail_session(error.what(), context.generation);
-  }
-}
-
-void DataCollectionNode::on_hand(
-  const Json & stream, aimdk_msgs::msg::HandStateArray::SharedPtr message)
-{
-  const auto context = receive_context();
-  if (!context.active) {
-    return;
-  }
-  try {
-    accept_message(stream, hand_json(*message), serialize_raw(*message, record_raw_), context);
-  } catch (const std::exception & error) {
-    fail_session(error.what(), context.generation);
-  }
-}
-
-void DataCollectionNode::accept_message(
-  const Json & stream, const Json & message,
-  std::shared_ptr<rclcpp::SerializedMessage> serialized, const ReceiveContext & context)
-{
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  if (!recording_enabled_ || generation_ != context.generation || !writer_->is_recording()) {
-    return;
-  }
-  mapper_->accept(stream.at("id").get<std::string>(), message, context.time_ns, context.monotonic_ns);
-  if (serialized) {
-    writer_->enqueue_raw(stream.at("topic").get<std::string>(),
-      stream.at("message_type").get<std::string>(), std::move(serialized), context.time_ns);
-  }
-}
-
-void DataCollectionNode::sample()
-{
-  uint64_t generation = 0;
-  try {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!recording_enabled_ || !writer_->is_recording()) {
-      return;
-    }
-    generation = generation_;
-    const auto sample_ros = get_clock()->now().nanoseconds();
-    const auto sample_monotonic = monotonic_now_ns();
-    writer_->enqueue_frame(mapper_->frame(frame_index_++, sample_ros, sample_monotonic));
-  } catch (const std::exception & error) {
-    fail_session(error.what(), generation);
-  }
-}
-
 void DataCollectionNode::fail_session(const std::string & reason, uint64_t generation)
 {
   std::lock_guard<std::mutex> control_lock(control_mutex_);
@@ -319,7 +286,7 @@ void DataCollectionNode::fail_session(const std::string & reason, uint64_t gener
     node_error_ = reason;
   }
   writer_->fail(reason);
-  RCLCPP_ERROR(get_logger(), "Session input/sampling failed: %s", reason.c_str());
+  RCLCPP_ERROR(get_logger(), "Session input failed: %s", reason.c_str());
 }
 
 void DataCollectionNode::start_recording()
@@ -336,8 +303,6 @@ void DataCollectionNode::start_recording()
   const auto path = writer_->start();
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    mapper_->reset();
-    frame_index_ = 0;
     node_error_.clear();
     // 开门时再次推进代号，拒绝 writer 初始化期间已进入但尚未取锁的回调。
     ++generation_;
@@ -355,7 +320,7 @@ void DataCollectionNode::stop_recording()
     recording_enabled_ = false;
     ++generation_;
   }
-  // 门控关闭之后再排空，避免在映射锁内等待磁盘 I/O。
+  // 门控关闭之后再排空，避免在接收锁内等待磁盘 I/O。
   // 只有排空、关闭和摘要写入成功返回后才输出停止日志；异常仍交给调用者报告。
   const auto summary = writer_->stop();
   const auto path = summary.at("session_dir").get<std::string>();
@@ -363,9 +328,9 @@ void DataCollectionNode::stop_recording()
     RCLCPP_INFO(get_logger(), "Recording already stopped: no session has been started");
     return;
   }
-  const auto frame_counts = summary.at("frames").dump();
-  RCLCPP_INFO(get_logger(), "Recording %s: %s; frames=%s; data_complete=%s",
-    already_closed ? "already stopped" : "stopped", path.c_str(), frame_counts.c_str(),
+  const auto raw_counts = summary.at("raw").dump();
+  RCLCPP_INFO(get_logger(), "Recording %s: %s; raw=%s; data_complete=%s",
+    already_closed ? "already stopped" : "stopped", path.c_str(), raw_counts.c_str(),
     summary.at("data_complete").get<bool>() ? "true" : "false");
 }
 
@@ -373,8 +338,16 @@ Json DataCollectionNode::status()
 {
   auto result = writer_->status();
   std::lock_guard<std::mutex> lock(state_mutex_);
-  result["sampling_enabled"] = recording_enabled_ && writer_->is_recording();
-  result["sample_rate_hz"] = sample_rate_hz_;
+  result["recording_enabled"] = recording_enabled_ && writer_->is_recording();
+  const auto now = monotonic_now_ns();
+  for (auto & topic : result.at("raw").items()) {
+    auto & counts = topic.value();
+    if (counts.contains("last_description")) {
+      counts["receive_age_ns"] = now - counts.at("last_description").at("receive_monotonic_ns").get<int64_t>();
+    } else {
+      counts["receive_age_ns"] = nullptr;
+    }
+  }
   result["control_ready"] = control_ready_.load();
   result["node_error"] = node_error_.empty() ? Json(nullptr) : Json(node_error_);
   return result;

@@ -1,0 +1,214 @@
+{
+  "schema_version": 2,
+  "platform": "agibot_x2",
+  "streams": [
+    {
+      "id": "arms",
+      "topic": "/aima/hal/joint/arm/state",
+      "message_type": "aimdk_msgs/msg/JointStateArray",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 10
+      }
+    },
+    {
+      "id": "hands",
+      "topic": "/aima/hal/joint/hand/state",
+      "message_type": "aimdk_msgs/msg/HandStateArray",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 10
+      }
+    },
+    {
+      "id": "head_joints",
+      "topic": "/aima/hal/joint/head/state",
+      "message_type": "aimdk_msgs/msg/JointStateArray",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 10
+      }
+    },
+    {
+      "id": "waist",
+      "topic": "/aima/hal/joint/waist/state",
+      "message_type": "aimdk_msgs/msg/JointStateArray",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 10
+      }
+    },
+    {
+      "id": "legs",
+      "topic": "/aima/hal/joint/leg/state",
+      "message_type": "aimdk_msgs/msg/JointStateArray",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 10
+      }
+    },
+    {
+      "id": "arm_commands",
+      "topic": "/aima/hal/joint/arm/command",
+      "message_type": "aimdk_msgs/msg/JointCommandArray",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 100
+      }
+    },
+    {
+      "id": "imu_chest",
+      "topic": "/aima/hal/imu/chest/state",
+      "message_type": "sensor_msgs/msg/Imu",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      }
+    },
+    {
+      "id": "head_rgb",
+      "topic": "/aima/hal/sensor/rgbd_head_front/rgb_image",
+      "message_type": "sensor_msgs/msg/Image",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      },
+      "includes": [
+        "head_rgb_info"
+      ]
+    },
+    {
+      "id": "head_rgb_info",
+      "topic": "/aima/hal/sensor/rgbd_head_front/rgb_camera_info",
+      "message_type": "sensor_msgs/msg/CameraInfo",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      }
+    },
+    {
+      "id": "head_depth",
+      "topic": "/aima/hal/sensor/rgbd_head_front/depth_image",
+      "message_type": "sensor_msgs/msg/Image",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      },
+      "includes": [
+        "head_depth_info"
+      ]
+    },
+    {
+      "id": "head_depth_info",
+      "topic": "/aima/hal/sensor/rgbd_head_front/depth_camera_info",
+      "message_type": "sensor_msgs/msg/CameraInfo",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      }
+    },
+    {
+      "id": "wrist_left_rgb",
+      "topic": "/wrist/left/color/image_rect_raw",
+      "message_type": "sensor_msgs/msg/Image",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      },
+      "includes": [
+        "wrist_left_rgb_info"
+      ]
+    },
+    {
+      "id": "wrist_left_rgb_info",
+      "topic": "/wrist/left/color/camera_info",
+      "message_type": "sensor_msgs/msg/CameraInfo",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      }
+    },
+    {
+      "id": "wrist_left_depth",
+      "topic": "/wrist/left/depth/image_rect_raw",
+      "message_type": "sensor_msgs/msg/Image",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      },
+      "includes": [
+        "wrist_left_depth_info"
+      ]
+    },
+    {
+      "id": "wrist_left_depth_info",
+      "topic": "/wrist/left/depth/camera_info",
+      "message_type": "sensor_msgs/msg/CameraInfo",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      }
+    },
+    {
+      "id": "wrist_right_rgb",
+      "topic": "/wrist/right/color/image_rect_raw",
+      "message_type": "sensor_msgs/msg/Image",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      },
+      "includes": [
+        "wrist_right_rgb_info"
+      ]
+    },
+    {
+      "id": "wrist_right_rgb_info",
+      "topic": "/wrist/right/color/camera_info",
+      "message_type": "sensor_msgs/msg/CameraInfo",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      }
+    },
+    {
+      "id": "wrist_right_depth",
+      "topic": "/wrist/right/depth/image_rect_raw",
+      "message_type": "sensor_msgs/msg/Image",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      },
+      "includes": [
+        "wrist_right_depth_info"
+      ]
+    },
+    {
+      "id": "wrist_right_depth_info",
+      "topic": "/wrist/right/depth/camera_info",
+      "message_type": "sensor_msgs/msg/CameraInfo",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 5
+      }
+    }
+  ]
+}

@@ -34,6 +34,47 @@ int64_t system_time_ns()
     std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
+/** @brief 返回单调时钟纳秒，用于阶段耗时。 */
+int64_t steady_time_ns()
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+/** @brief 返回当前线程累计 CPU 纳秒；Linux 线程时钟读取失败时返回零。 */
+int64_t thread_cpu_ns()
+{
+  timespec value{};
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) != 0) {return 0;}
+  return static_cast<int64_t>(value.tv_sec) * 1000000000LL + value.tv_nsec;
+}
+
+/** @brief 累计阶段耗时，不保留逐消息日志以减少诊断开销。 */
+struct DurationStats
+{
+  uint64_t calls{0};
+  int64_t wall_ns{0};
+  int64_t cpu_ns{0};
+  int64_t max_wall_ns{0};
+
+  /** @brief 累加一次阶段的墙钟和线程 CPU 耗时，单位纳秒。 */
+  void observe(int64_t wall, int64_t cpu = 0)
+  {
+    ++calls;
+    wall_ns += wall;
+    cpu_ns += cpu;
+    max_wall_ns = std::max(max_wall_ns, wall);
+  }
+
+  /** @brief 返回累计次数、总耗时、平均值和最大值；CPU 为调用线程时间。 */
+  Json json(bool cpu_measured = false) const
+  {
+    return Json{{"calls", calls}, {"total_wall_ns", wall_ns}, {"total_cpu_ns", cpu_measured ? Json(cpu_ns) : Json(nullptr)},
+      {"mean_wall_ns", calls ? Json(static_cast<double>(wall_ns) / calls) : Json(nullptr)},
+      {"max_wall_ns", max_wall_ns}};
+  }
+};
+
 /** @brief 将 Unix 纳秒时间转为固定北京时间的目录时间字段；转换失败时抛出异常。 */
 std::string session_time_label(int64_t system_ns)
 {
@@ -86,11 +127,11 @@ void write_json_atomically(const std::filesystem::path & destination, const Json
 class SessionWriter::Impl
 {
 public:
-  /** @brief 保存不可变配置并校验数据根目录、队列容量及原始话题。 */
+  /** @brief 保存不可变来源配置并校验数据根目录、队列容量及原始话题。 */
   Impl(
-    const Json & mapping, const std::string & root, bool record_raw,
+    const Json & mapping, const std::string & root,
     std::size_t queue_capacity, const Json & metadata)
-  : mapping_(mapping), root_(root), record_raw_(record_raw), capacity_(queue_capacity),
+  : mapping_(mapping), root_(root), capacity_(queue_capacity),
     metadata_(metadata)
   {
     if (root.empty() || !root_.is_absolute()) {
@@ -116,6 +157,11 @@ public:
       topics_.emplace(topic, type);
       stream_ids_.emplace(id, topic);
     }
+    std::ifstream config_input(metadata_.at("mcap_storage_config").get<std::string>());
+    if (!config_input) {throw std::runtime_error("cannot read MCAP storage config");}
+    std::ostringstream contents;
+    contents << config_input.rdbuf();
+    storage_config_text_ = contents.str();
     reset_statistics();
   }
 
@@ -129,7 +175,7 @@ public:
         return session_dir_.string();
       }
     }
-    if (worker_.joinable() || frames_.is_open() || raw_writer_) {
+    if (worker_.joinable() || raw_writer_) {
       finish(false);
     }
     {
@@ -162,13 +208,16 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         session_dir_ = selected;
       }
-      frames_.exceptions(std::ios::badbit | std::ios::failbit);
-      frames_.open(selected / "frames.jsonl", std::ios::out | std::ios::trunc);
-      if (record_raw_) {
+      {
         auto raw = std::make_unique<rosbag2_cpp::Writer>();
         rosbag2_storage::StorageOptions storage;
         storage.uri = (selected / "raw").string();
         storage.storage_id = "mcap";
+        std::ofstream config_copy(selected / "mcap_storage.yaml");
+        config_copy.exceptions(std::ios::badbit | std::ios::failbit);
+        config_copy << storage_config_text_;
+        config_copy.close();
+        storage.storage_config_uri = (selected / "mcap_storage.yaml").string();
         rosbag2_cpp::ConverterOptions converter;
         converter.input_serialization_format = rmw_get_serialization_format();
         converter.output_serialization_format = rmw_get_serialization_format();
@@ -218,58 +267,83 @@ public:
   Json status() const
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    bool data_complete = closed_ && last_error_.empty() &&
-      frame_counts_.at("written").get<uint64_t>() > 0 &&
-      frame_counts_.at("dropped").get<uint64_t>() == 0 && invalid_frames_ == 0;
-    for (const auto & stream : streams_.items()) {
-      data_complete = data_complete && stream.value().at("seen").get<bool>() &&
-        stream.value().at("missing_frames").get<uint64_t>() == 0 &&
-        stream.value().at("observed_quality_issues").empty();
-    }
+    bool has_data = false;
+    bool data_complete = closed_ && last_error_.empty();
     for (const auto & topic : raw_counts_.items()) {
-      data_complete = data_complete && topic.value().at("dropped").get<uint64_t>() == 0;
+      has_data = has_data || topic.value().at("written").get<uint64_t>() > 0;
+      data_complete = data_complete && topic.value().at("dropped").get<uint64_t>() == 0 &&
+        topic.value().at("written").get<uint64_t>() > 0;
     }
+    Json by_topic = Json::object();
+    for (const auto & entry : write_timings_) {by_topic[entry.first] = entry.second.json(true);}
     return Json{
-      {"schema_version", 1}, {"state", state_}, {"session_dir", session_dir_.string()},
+      {"timing", {{"write_call", write_timing_.json(true)}, {"write_by_topic", by_topic},
+        {"queue_wait", queue_wait_timing_.json()}, {"serialization", serialization_timing_.json()},
+        {"close_call", close_timing_.json(true)}, {"stop_drain_wall_ns", stop_drain_wall_ns_}}},
+      {"schema_version", 2}, {"state", state_}, {"session_dir", session_dir_.string()},
       {"started_system_time_ns", started_ns_ == 0 ? Json(nullptr) : Json(started_ns_)},
       {"ended_system_time_ns", ended_ns_ == 0 ? Json(nullptr) : Json(ended_ns_)},
       {"closed", closed_}, {"complete", closed_ && last_error_.empty()},
       {"data_complete", data_complete},
-      {"no_data", frame_counts_.at("written").get<uint64_t>() == 0},
-      {"record_raw", record_raw_}, {"queue_capacity", capacity_},
+      {"no_data", !has_data},
+      {"record_raw", true}, {"storage_format", "mcap"}, {"queue_capacity", capacity_},
       {"queue_pending", queue_.size()}, {"queue_peak", queue_peak_},
-      {"frames", frame_counts_}, {"raw", raw_counts_}, {"streams", streams_},
-      {"invalid_frames", invalid_frames_}, {"last_error", last_error_},
+      {"queue_bytes", queue_bytes_}, {"queue_peak_bytes", queue_peak_bytes_},
+      {"raw", raw_counts_}, {"last_error", last_error_},
       {"mapping", mapping_}, {"metadata", metadata_}};
-  }
-
-  /** @brief 提交统一帧；队列满时丢弃新帧并计数，回调不执行磁盘操作。 */
-  bool enqueue_frame(Json frame)
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!accepting_) {
-      return false;
-    }
-    Record record;
-    record.frame = std::move(frame);
-    return enqueue_locked(std::move(record), frame_counts_);
   }
 
   /** @brief 提交配置话题的独占序列化样本及接收时刻；参数非法抛出异常。 */
   bool enqueue_raw(
     const std::string & topic, const std::string & type,
-    std::shared_ptr<rclcpp::SerializedMessage> message, int64_t receive_time_ns)
+    std::shared_ptr<rclcpp::SerializedMessage> message, int64_t receive_time_ns, const Json & description)
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!accepting_ || !record_raw_) {
+    if (!accepting_) {
       return false;
     }
     const auto found = topics_.find(topic);
     if (found == topics_.end() || found->second != type || !message) {
       throw std::invalid_argument("raw message does not match a configured topic/type");
     }
+    serialization_timing_.observe(description.at("serialization_wall_ns").get<int64_t>());
+    auto & counts = raw_counts_.at(topic);
+    if (counts.at("submitted") == 0) {
+      counts["first_receive_time_ns"] = receive_time_ns;
+      counts["first_receive_monotonic_ns"] = description.at("receive_monotonic_ns");
+      counts["first_source_stamp_ns"] = description.value("source_stamp_ns", Json(nullptr));
+    }
+    const auto previous_time = counts.value("last_receive_time_ns", receive_time_ns);
+    if (receive_time_ns < previous_time) {
+      counts["receive_time_backwards"] = counts.value("receive_time_backwards", uint64_t{0}) + 1;
+    }
+    for (const auto & field : {"source_stamp_ns", "meas_stamp_ns", "sequence"}) {
+      if (!description.contains(field)) {continue;}
+      const std::string key(field);
+      const auto value = description.at(key).get<int64_t>();
+      if (value == 0) {
+        counts[key + "_zero"] = counts.value(key + "_zero", uint64_t{0}) + 1;
+      }
+      if (counts.contains("last_description") && counts.at("last_description").contains(key)) {
+        const auto previous = counts.at("last_description").at(key).get<int64_t>();
+        if (value == previous) {
+          counts[key + "_repeated"] = counts.value(key + "_repeated", uint64_t{0}) + 1;
+        } else if (value < previous) {
+          counts[key + "_backwards"] = counts.value(key + "_backwards", uint64_t{0}) + 1;
+        }
+      }
+    }
+    counts["last_receive_time_ns"] = receive_time_ns;
+    counts["last_source_stamp_ns"] = description.value("source_stamp_ns", Json(nullptr));
+    counts["last_description"] = description;
+    const auto duration_ns = description.at("receive_monotonic_ns").get<int64_t>() -
+      counts.at("first_receive_monotonic_ns").get<int64_t>();
+    counts["receive_frequency_hz"] = duration_ns > 0 ?
+      Json(counts.at("submitted").get<uint64_t>() * 1000000000.0 / duration_ns) : Json(nullptr);
+    const auto size = message->size();
+    counts["received_bytes"] = counts.value("received_bytes", uint64_t{0}) + size;
     Record record;
-    record.raw = true;
+    record.bytes = size;
     record.topic = topic;
     record.type = type;
     record.message = std::move(message);
@@ -292,19 +366,19 @@ public:
   }
 
 private:
-  /** @brief 单条队列记录；统一帧与序列化消息由 raw 字段区分。 */
+  /** @brief 单条原始序列化消息及接收时间。 */
   struct Record
   {
-    bool raw{false};
-    Json frame;
+    std::size_t bytes{0};
     std::string topic;
     std::string type;
     std::shared_ptr<rclcpp::SerializedMessage> message;
     int64_t receive_time_ns{0};
+    int64_t enqueue_steady_ns{0};
   };
 
   /** @brief 统一执行容量检查、入队及计数；调用方持状态锁且已校验接收门和记录类型。
-   * @param record 待写记录。 @param counts 对应统一帧或原始话题的计数。
+   * @param record 待写记录。 @param counts 对应原始话题的计数。
    * @return 成功入队为 true；队列满则丢弃新记录并计数，返回 false。
    */
   bool enqueue_locked(Record record, Json & counts)
@@ -314,6 +388,9 @@ private:
       increment(counts, "dropped");
       return false;
     }
+    record.enqueue_steady_ns = steady_time_ns();
+    queue_bytes_ += record.bytes;
+    queue_peak_bytes_ = std::max(queue_peak_bytes_, queue_bytes_);
     queue_.push_back(std::move(record));
     queue_peak_ = std::max(queue_peak_, queue_.size());
     condition_.notify_one();
@@ -333,23 +410,21 @@ private:
   /** @brief 清空当前会话计数，并预登记全部预期流以识别从未到达的来源。 */
   void reset_statistics()
   {
-    frame_counts_ = empty_counts();
     raw_counts_ = Json::object();
-    streams_ = Json::object();
     queue_.clear();
     queue_peak_ = 0;
-    invalid_frames_ = 0;
+    queue_bytes_ = 0;
+    queue_peak_bytes_ = 0;
     worker_started_ = false;
-    for (const auto & stream : stream_ids_) {
-      streams_[stream.first] = Json{
-        {"seen", false}, {"missing_frames", 0u}, {"reused_frames", 0u},
-        {"issue_frames", 0u}, {"quality_issue_frames", 0u},
-        {"observed_quality_issues", Json::array()}};
-    }
-    if (record_raw_) {
-      for (const auto & topic : topics_) {
-        raw_counts_[topic.first] = empty_counts();
-      }
+    write_timing_ = {};
+    queue_wait_timing_ = {};
+    serialization_timing_ = {};
+    close_timing_ = {};
+    stop_drain_wall_ns_ = 0;
+    write_timings_.clear();
+    for (const auto & topic : topics_) {
+      write_timings_[topic.first] = {};
+      raw_counts_[topic.first] = empty_counts();
     }
   }
 
@@ -362,67 +437,10 @@ private:
     state_ = "ERROR";
   }
 
-  /** @brief 统计成功写入帧中的缺流、重复、异常和字段有效性；调用方持状态锁。 */
-  void observe_frame_locked(const Json & frame)
-  {
-    bool invalid = false;
-    const auto stream_values = frame.value("streams", Json::object());
-    for (auto & stream : streams_.items()) {
-      auto & counts = stream.value();
-      if (!stream_values.contains(stream.key()) ||
-        !stream_values.at(stream.key()).value("received", false))
-      {
-        increment(counts, "missing_frames");
-        invalid = true;
-        continue;
-      }
-      const auto & source = stream_values.at(stream.key());
-      counts["seen"] = true;
-      if (source.value("reused", false)) {
-        increment(counts, "reused_frames");
-      }
-      if (source.contains("issues") && !source.at("issues").empty()) {
-        increment(counts, "issue_frames");
-      }
-      bool quality_issue = false;
-      for (const auto & issue : source.value("issues", Json::array())) {
-        quality_issue = quality_issue || issue != "cached_sample_reused";
-      }
-      if (quality_issue) {
-        increment(counts, "quality_issue_frames");
-      }
-      // 累计集合保留被丢弃采样帧中的源异常，但不将后续正常帧反复计为异常帧。
-      for (const auto & field : {"issues", "history_issues"}) {
-        for (const auto & issue : source.value(field, Json::array())) {
-          auto & history = counts.at("observed_quality_issues");
-          if (issue != "cached_sample_reused" &&
-            std::find(history.begin(), history.end(), issue) == history.end())
-          {
-            history.push_back(issue);
-          }
-        }
-      }
-    }
-    for (const std::string side : {"left", "right"}) {
-      const auto & arm = frame.at("arms").at(side);
-      for (const auto & valid : arm.at("valid")) {
-        invalid = invalid || !valid.get<bool>();
-      }
-      invalid = invalid || !frame.at("grippers").at(side).at("valid").get<bool>();
-    }
-    if (invalid) {
-      ++invalid_frames_;
-    }
-  }
-
-  /** @brief 对已接收但无法写入的记录计入丢弃；调用方持状态锁。 */
+  /** @brief 对已接收但无法写入的原始消息计入丢弃；调用方持状态锁。 */
   void count_discard_locked(const Record & record)
   {
-    if (record.raw) {
-      increment(raw_counts_.at(record.topic), "dropped");
-    } else {
-      increment(frame_counts_, "dropped");
-    }
+    increment(raw_counts_.at(record.topic), "dropped");
   }
 
   /** @brief 单线程写盘；STOP 后排空，写入失败则锁存错误并丢弃剩余队列。 */
@@ -440,24 +458,23 @@ private:
         }
         record = std::move(queue_.front());
         queue_.pop_front();
+        queue_bytes_ -= record.bytes;
+        queue_wait_timing_.observe(steady_time_ns() - record.enqueue_steady_ns);
       }
       bool written = false;
       try {
-        if (record.raw) {
-          raw_writer_->write(
-            record.message, record.topic, record.type,
-            rclcpp::Time(record.receive_time_ns, RCL_ROS_TIME));
-        } else {
-          frames_ << record.frame.dump() << '\n';
-        }
+        const auto wall_begin = steady_time_ns();
+        const auto cpu_begin = thread_cpu_ns();
+        raw_writer_->write(
+          record.message, record.topic, record.type,
+          rclcpp::Time(record.receive_time_ns, RCL_ROS_TIME));
+        const auto cpu_elapsed = thread_cpu_ns() - cpu_begin;
+        const auto wall_elapsed = steady_time_ns() - wall_begin;
         written = true;
         std::lock_guard<std::mutex> lock(mutex_);
-        if (record.raw) {
-          increment(raw_counts_.at(record.topic), "written");
-        } else {
-          increment(frame_counts_, "written");
-          observe_frame_locked(record.frame);
-        }
+        write_timing_.observe(wall_elapsed, cpu_elapsed);
+        write_timings_.at(record.topic).observe(wall_elapsed, cpu_elapsed);
+        increment(raw_counts_.at(record.topic), "written");
       } catch (const std::exception & error) {
         std::lock_guard<std::mutex> lock(mutex_);
         fail_locked(std::string("recording write failed: ") + error.what());
@@ -468,6 +485,7 @@ private:
           count_discard_locked(pending);
         }
         queue_.clear();
+        queue_bytes_ = 0;
         return;
       }
     }
@@ -477,7 +495,7 @@ private:
   Json finish(bool report_error)
   {
     // 幂等 STOP 不重写已完成的摘要，避免后续状态查询扰动持久化结果。
-    if (!worker_.joinable() && !frames_.is_open() && !raw_writer_) {
+    if (!worker_.joinable() && !raw_writer_) {
       const Json previous = status();
       if (previous.at("closed").get<bool>() ||
         previous.at("session_dir").get<std::string>().empty())
@@ -497,26 +515,24 @@ private:
       }
     }
     condition_.notify_all();
+    const auto drain_begin = steady_time_ns();
     if (worker_.joinable()) {
       worker_.join();
     }
-    bool close_success = true;
-    if (frames_.is_open()) {
-      try {
-        frames_.flush();
-        frames_.close();
-      } catch (const std::exception & error) {
-        close_success = false;
-        fail(std::string("frame file close failed: ") + error.what());
-        // 失败的流仍须关闭句柄，但不将二次无异常关闭解释为数据成功。
-        frames_.exceptions(std::ios::goodbit);
-        frames_.close();
-      }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stop_drain_wall_ns_ = steady_time_ns() - drain_begin;
     }
-    frames_.clear();
+    bool close_success = true;
     if (raw_writer_) {
       try {
+        const auto wall_begin = steady_time_ns();
+        const auto cpu_begin = thread_cpu_ns();
         raw_writer_->close();
+        const auto cpu_elapsed = thread_cpu_ns() - cpu_begin;
+        const auto wall_elapsed = steady_time_ns() - wall_begin;
+        std::lock_guard<std::mutex> lock(mutex_);
+        close_timing_.observe(wall_elapsed, cpu_elapsed);
       } catch (const std::exception & error) {
         close_success = false;
         fail(std::string("MCAP close failed: ") + error.what());
@@ -549,9 +565,9 @@ private:
 
   Json mapping_;
   std::filesystem::path root_;
-  bool record_raw_;
   std::size_t capacity_;
   Json metadata_;
+  std::string storage_config_text_;
   std::map<std::string, std::string> topics_;
   std::map<std::string, std::string> stream_ids_;
   mutable std::mutex mutex_;
@@ -559,7 +575,6 @@ private:
   std::condition_variable condition_;
   std::deque<Record> queue_;
   std::thread worker_;
-  std::ofstream frames_;
   std::unique_ptr<rosbag2_cpp::Writer> raw_writer_;
   std::filesystem::path session_dir_;
   bool accepting_{false};
@@ -569,18 +584,23 @@ private:
   std::string last_error_;
   int64_t started_ns_{0};
   int64_t ended_ns_{0};
-  Json frame_counts_;
   Json raw_counts_;
-  Json streams_;
+  DurationStats write_timing_;
+  DurationStats queue_wait_timing_;
+  DurationStats serialization_timing_;
+  DurationStats close_timing_;
+  std::map<std::string, DurationStats> write_timings_;
+  int64_t stop_drain_wall_ns_{0};
   std::size_t queue_peak_{0};
-  uint64_t invalid_frames_{0};
+  std::size_t queue_bytes_{0};
+  std::size_t queue_peak_bytes_{0};
 };
 
 /** @brief 构造内部存储管理器；参数含义同公开声明，非法参数抛出异常。 */
 SessionWriter::SessionWriter(
-  const Json & mapping, const std::string & root, bool record_raw,
+  const Json & mapping, const std::string & root,
   std::size_t queue_capacity, const Json & metadata)
-: impl_(std::make_unique<Impl>(mapping, root, record_raw, queue_capacity, metadata))
+: impl_(std::make_unique<Impl>(mapping, root, queue_capacity, metadata))
 {
 }
 
@@ -612,18 +632,12 @@ Json SessionWriter::status() const
   return impl_->status();
 }
 
-/** @brief 提交统一帧并返回是否成功入队。 */
-bool SessionWriter::enqueue_frame(Json frame)
-{
-  return impl_->enqueue_frame(std::move(frame));
-}
-
 /** @brief 提交原始样本并返回是否成功入队；参数错误抛出异常。 */
 bool SessionWriter::enqueue_raw(
   const std::string & topic, const std::string & type,
-  std::shared_ptr<rclcpp::SerializedMessage> message, int64_t receive_time_ns)
+  std::shared_ptr<rclcpp::SerializedMessage> message, int64_t receive_time_ns, const Json & description)
 {
-  return impl_->enqueue_raw(topic, type, std::move(message), receive_time_ns);
+  return impl_->enqueue_raw(topic, type, std::move(message), receive_time_ns, description);
 }
 
 /** @brief 返回当前是否开放接收门。 */

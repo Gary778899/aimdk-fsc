@@ -2,14 +2,15 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>data_collection</name>
-  <version>0.2.0</version>
-  <description>Independent JSON-mapped dual-arm and gripper state collector with 50 Hz frames.</description>
+  <version>0.3.0</version>
+  <description>Selective multimodal MCAP collector.</description>
   <maintainer email="gary@example.com">gary</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rmw</depend>
   <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
   <depend>builtin_interfaces</depend>
   <depend>aimdk_msgs</depend>
   <depend>nlohmann-json-dev</depend>
@@ -20,6 +21,11 @@
   <!-- Ubuntu 22.04 的 libzmq3-dev 同时提供 libzmq.pc 和 zmq.hpp；CMake 仍检查头文件。 -->
   <depend>libzmq3-dev</depend>
 
+  <exec_depend>aimdk_functions</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>rosbag2_py</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>rosidl_runtime_py</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>

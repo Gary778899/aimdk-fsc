@@ -1,0 +1,7 @@
+# Zstd 分块无损压缩；图像消息保持原始编码。
+compression: "Zstd"
+compressionLevel: "Fast"
+noChunking: false
+noMessageIndex: false
+noSummary: false
+forceCompression: false
