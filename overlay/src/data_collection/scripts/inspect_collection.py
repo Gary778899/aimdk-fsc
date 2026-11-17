@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""仅用 Python 标准库读回统一采集帧，核对结构、计数、频率和数据质量。"""
+"""检查 MCAP 会话摘要，可选在 ROS 环境读回消息；兼容历史 JSONL 会话。"""
 
 import argparse
 from collections import Counter
@@ -155,6 +155,8 @@ def validate_frame(frame, mapping, location):
 def inspect_session(directory):
     """逐行读回会话文件并核对摘要；返回检查报告，损坏文件抛出异常。"""
     session = parse_json((directory / "session.json").read_text(encoding="utf-8"))
+    if session.get("schema_version") == 2:
+        return inspect_mcap_summary(directory, session)
     require(type(session["schema_version"]) is int and session["schema_version"] == 1,
             "session.schema_version 不受支持")
     mapping = session["mapping"]
@@ -327,16 +329,92 @@ def inspect_session(directory):
     }
 
 
+def inspect_mcap_summary(directory, session):
+    """用标准库核对新版 MCAP 会话摘要；不读取 MCAP 消息内容，返回检查报告。"""
+    expected = {entry["topic"] for entry in session["mapping"]["streams"]}
+    require(expected and set(session["raw"]) == expected, "话题统计与所选来源不一致")
+    finalized = session["ended_system_time_ns"] is not None
+    written = 0
+    dropped = 0
+    for topic, counts in session["raw"].items():
+        for field in ("submitted", "written", "dropped"):
+            require(integer(counts[field], f"raw.{topic}.{field}") >= 0, "消息计数不得为负")
+        if finalized:
+            require(counts["submitted"] == counts["written"] + counts["dropped"],
+                    f"{topic} 消息计数不守恒")
+        written += counts["written"]
+        dropped += counts["dropped"]
+    complete = finalized and session["closed"] and not session["last_error"]
+    data_complete = complete and dropped == 0 and all(
+        counts["written"] > 0 for counts in session["raw"].values())
+    require(session["no_data"] == (written == 0), "no_data 与写入消息数不一致")
+    require(session["complete"] == complete, "complete 与会话收尾状态不一致")
+    require(session["data_complete"] == data_complete, "data_complete 与来源统计不一致")
+    return dict(inspection_scope="session_metadata", session_dir=str(directory.resolve()),
+                structure_valid=True, closed=session["closed"], complete=complete,
+                data_complete=data_complete, no_data=written == 0, messages=written,
+                dropped=dropped, raw=session["raw"], raw_mcap_enabled=True,
+                raw_mcap_verified=False, last_error=session["last_error"])
+
+
+def verify_mcap(directory):
+    """在 Humble 环境逐条读回 MCAP 并反序列化，核对类型、写入数及图像结构；失败抛异常。"""
+    import rosbag2_py
+    from rclpy.serialization import deserialize_message
+    from rosidl_runtime_py.utilities import get_message
+
+    session = parse_json((directory / "session.json").read_text(encoding="utf-8"))
+    require(session["record_raw"], "会话未启用 MCAP")
+    require(session["closed"], "先 STOP 并关闭会话，再读回 MCAP")
+    reader = rosbag2_py.SequentialReader()
+    reader.open(rosbag2_py.StorageOptions(uri=str(directory / "raw"), storage_id="mcap"),
+                rosbag2_py.ConverterOptions("cdr", "cdr"))
+    expected = {entry["topic"]: entry["message_type"] for entry in session["mapping"]["streams"]}
+    actual = {entry.name: entry.type for entry in reader.get_all_topics_and_types()}
+    require(actual == expected, "MCAP 话题或消息类型与会话配置不一致")
+    classes = {topic: get_message(kind) for topic, kind in actual.items()}
+    counts = Counter()
+    stamps = {}
+    while reader.has_next():
+        topic, payload, received_ns = reader.read_next()
+        message = deserialize_message(payload, classes[topic])
+        counts[topic] += 1
+        if hasattr(message, "header"):
+            stamp = message.header.stamp
+            source_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
+            stats = stamps.setdefault(topic, dict(first_source_stamp_ns=source_ns,
+                                                 first_receive_time_ns=received_ns,
+                                                 source_repeats=0, source_backwards=0))
+            previous = stats.get("last_source_stamp_ns")
+            if previous is not None:
+                stats["source_repeats"] += source_ns == previous
+                stats["source_backwards"] += source_ns < previous
+            stats["last_source_stamp_ns"] = source_ns
+            stats["last_receive_time_ns"] = received_ns
+        if actual[topic] == "sensor_msgs/msg/Image":
+            require(message.width > 0 and message.height > 0 and message.step > 0 and
+                    len(message.data) == message.step * message.height,
+                    f"{topic} 图像尺寸、步长或数据长度无效")
+            stamps[topic].update(width=message.width, height=message.height, encoding=message.encoding)
+    for topic in expected:
+        require(counts[topic] == session["raw"][topic]["written"], f"{topic} MCAP 条数与摘要不一致")
+    return dict(verified=True, counts={topic: counts[topic] for topic in expected}, sources=stamps)
+
+
 def main():
     """解析会话目录并输出 JSON；完整返回 0，质量不完整返回 1，文件损坏返回 2。"""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("session_dir", type=Path, help="包含 session.json 和 frames.jsonl 的会话目录")
+    parser.add_argument("session_dir", type=Path, help="包含 session.json 的会话目录")
+    parser.add_argument("--verify-mcap", action="store_true", help="在机器人 ROS 环境实际读回并反序列化 MCAP")
     options = parser.parse_args()
     try:
         report = inspect_session(options.session_dir)
+        if options.verify_mcap:
+            report["mcap_readback"] = verify_mcap(options.session_dir)
+            report["raw_mcap_verified"] = True
         print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
         return 0 if report["data_complete"] else 1
-    except (OSError, ValueError, KeyError, TypeError, OverflowError) as error:
+    except (OSError, ValueError, KeyError, TypeError, OverflowError, ImportError, RuntimeError) as error:
         print(json.dumps({"structure_valid": False, "error": str(error)}, ensure_ascii=False))
         return 2
 

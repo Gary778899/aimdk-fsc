@@ -92,4 +92,7 @@ install(PROGRAMS scripts/collection_control.py
 install(PROGRAMS scripts/inspect_collection.py
   DESTINATION lib/${PROJECT_NAME} RENAME inspect_collection)
 
+install(PROGRAMS scripts/benchmark_collection_io.py
+  DESTINATION lib/${PROJECT_NAME} RENAME benchmark_collection_io)
+
 ament_package()
