@@ -1,5 +1,7 @@
 """Install the custom robot utilities as a ROS 2 Python package."""
 
+from glob import glob
+
 from setuptools import find_packages, setup
 
 
@@ -12,6 +14,8 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
+        ('share/' + package_name + '/config', glob('config/*.json')),
     ],
     install_requires=['setuptools', 'numpy>=1.21'],
     package_data={
@@ -26,6 +30,7 @@ setup(
     entry_points={
         'console_scripts': [
             'volume_control = aimdk_functions.volume_control:main',
+            'wrist_camera_snapshot = aimdk_functions.wrist_camera_snapshot:main',
             'upper_body_control = aimdk_functions.upper_body_control:main',
             'upper_body_home = aimdk_functions.upper_body_home:main',
             'upper_body_trajectory = aimdk_functions.upper_body_trajectory:main',

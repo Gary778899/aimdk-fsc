@@ -26,6 +26,39 @@ ros2 run aimdk_functions upper_body_control tcp --help
 固定 underlay 为 `/home/agi/aimdk/install`；其他安装位置使用 `AIMDK_UNDERLAY_INSTALL`，
 并加载对应环境。流程见[项目说明](../../../README.md)。
 
+## 左右腕部 D405 与单帧图像
+
+两只 D405 经 USB 扩展坞接入 Jetson，在 Humble 开发容器运行。
+当前使用 RealSense ROS 驱动 `4.56.4`、SDK `2.56.4`。
+2026-11-12 已验证左右驱动启动、彩色单帧 PNG 保存及读回校验、下载到本机查看。
+设备绑定和图像流参数见 [wrist_cameras.json](config/wrist_cameras.json)，默认彩色与深度均为 640×480、30 fps。
+
+在机器人开发容器中启动驱动，并保持运行：
+
+```bash
+cd /home/agi/aimdk-fsc
+source /home/agi/aimdk/install/setup.bash
+source realsense_ws/install/local_setup.bash
+source install/local_setup.bash
+ros2 launch aimdk_functions wrist_cameras.launch.py
+```
+
+| 位置 | 序列号 | 彩色话题 | 深度话题 |
+| --- | --- | --- | --- |
+| 左手 | `260322272494` | `/wrist/left/color/image_rect_raw` | `/wrist/left/depth/image_rect_raw` |
+| 右手 | `260322277878` | `/wrist/right/color/image_rect_raw` | `/wrist/right/depth/image_rect_raw` |
+
+图像类型均为 `sensor_msgs/msg/Image`；相机内参话题为每侧的
+`/wrist/<left或right>/color/camera_info` 和 `/wrist/<left或right>/depth/camera_info`，
+类型为 `sensor_msgs/msg/CameraInfo`。彩色话题使用 `image_rect_raw`。
+
+单帧检查：另一个容器终端加载同样环境后，执行
+`ros2 run aimdk_functions wrist_camera_snapshot`，将左右各一张彩色 PNG 和 `manifest.json`
+保存到当前目录下 `data/images/<UTC时间>/`；通过“机器人：下载采集数据”任务下载。
+两路分别取首帧，清单保留各自源时间戳和接收时间；连续录制及与关节数据的时间对齐尚未实现。
+
+## 上肢入口整理
+
 旧 `dual_arm_control`、`upper_body_move`、`upper_body_line` 入口及其执行实现已移除。
 分别改用 `upper_body_control joint/gripper`、`tcp --path endpoint`、`tcp`。
 原 `upper_body_move_core.py`、`upper_body_line_core.py` 的规划实现已合并至

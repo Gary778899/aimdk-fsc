@@ -1,0 +1,13 @@
+{
+  "camera_namespace": "wrist",
+  "serial_numbers": {
+    "left": "260322272494",
+    "right": "260322277878"
+  },
+  "stream_arguments": {
+    "enable_color": "true",
+    "enable_depth": "true",
+    "depth_module.color_profile": "640x480x30",
+    "depth_module.depth_profile": "640x480x30"
+  }
+}
