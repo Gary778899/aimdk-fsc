@@ -2,7 +2,7 @@
 
 ## 工作区分层
 
-本地仍使用一个 Git 仓库，源码分为两个独立工作空间：
+本地使用一个 Git 仓库，厂商 SDK、自研 overlay 和 RealSense 驱动分别使用独立工作空间：
 
 ```text
 underlay/
@@ -11,6 +11,8 @@ underlay/
   extra/       # 强化学习参考工程及补充模型，忽略Git、不同步、不构建
 overlay/
   src/functions、remote_control、test、data_collection、locomotion_wrapper
+realsense_ws/
+  src/realsense-ros-4.56.4/  # RealSense 驱动独立工作空间
 scripts/       # 构建入口及本地远程清理工具
 docker/        # 容器镜像定义及启动脚本
 docs/          # 自研规划与实验记录
@@ -23,6 +25,9 @@ data/、log/、exports/
 其中 `extra/` 保留 `COLCON_IGNORE`，当前厂商包和自研包均不以它作为构建或运行依赖。
 固定 SDK 和本地副本应保持版本对应，升级 SDK 时重新核对并构建 underlay。
 `locomotion_wrapper` 保留在本地 overlay 中，本轮不推送、不构建。
+`realsense_ws` 在本地与机器人端均保持同名目录；第三方源码从
+`docker/vendor/realsense-ros-4.56.4.tar.gz` 恢复，不纳入 Git，构建和安装产物也不纳入 Git。
+与固定 underlay 一样，RealSense 工作空间不参与日常同步和清理。
 
 ## 项目工作流程
 
@@ -38,9 +43,9 @@ data/、log/、exports/
 远端项目目录统一为 `/home/agi/aimdk-fsc/`，连接选项与参数见
 [.vscode/tasks.json](.vscode/tasks.json) 的 `inputs` 和各任务定义。
 两个任务使用 rsync `--relative` 的 `/./` 分界，将本地 `overlay/src/` 映射到
-机器人 `aimdk-fsc/src/`，将根目录 `scripts/`、`docker/` 分别映射到同名目录。
-只有这三个目录参与同步；厂商副本、`underlay/extra/`、本地研究文档和数据不会被推送。
-沿用 `--delete`，只清理目标 `src/`、`scripts/`、`docker/` 中本地已不存在且未被排除规则保护的内容。
+机器人 `aimdk-fsc/src/`，将根目录 `scripts/`、`docker/` 映射到同名目录。
+只有这三个目录参与同步；厂商副本、`realsense_ws/`、本地研究文档和数据不会被推送。
+沿用 `--delete`，只清理上述目标目录中本地已不存在且未被排除规则保护的内容。
 保留现有数据、日志、构建产物等排除规则，以及对 `src/locomotion_wrapper/` 的排除，
 不使用 `--delete-excluded`。受保护的旧安装产物不会因推送自动清理。
 
@@ -108,8 +113,34 @@ ros2 run aimdk_functions upper_body_control --help
 工作区依赖链及 `setup`／`local_setup` 语义见
 [colcon 官方说明](https://colcon.readthedocs.io/en/released/user/using-multiple-workspaces.html)。
 
-本地双工作空间布局下，构建脚本可识别 `overlay/src/` 并定位工作区；
+本地布局下，构建脚本可识别 `overlay/src/` 并定位自研工作区；
 本地电脑仍仅用于编辑和静态检查，不执行依赖机器人环境的构建。
+
+首次部署 RealSense 驱动时，在机器人开发容器内从已同步的归档恢复源码：
+
+```bash
+cd /home/agi/aimdk-fsc
+mkdir -p realsense_ws/src
+tar -xzf docker/vendor/realsense-ros-4.56.4.tar.gz -C realsense_ws/src
+```
+
+RealSense 驱动在开发容器内单独构建；后续驱动源码或依赖变更时重新构建：
+
+```bash
+source /opt/ros/humble/setup.bash
+cd /home/agi/aimdk-fsc/realsense_ws
+CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build \
+  --base-paths src \
+  --packages-select realsense2_camera_msgs realsense2_camera \
+  --executor sequential --symlink-install \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+```
+
+当前已验证的 SDK 为 RealSense `2.56.4`；构建需其开发文件及 `libeigen3-dev` 等驱动依赖。
+运行相机的终端再加载 `/home/agi/aimdk-fsc/realsense_ws/install/local_setup.bash`。
+左右 D405 的序列号绑定、统一启动和单帧 PNG 保存步骤见
+[功能包相机说明](overlay/src/functions/README.md#左右腕部-d405-与单帧图像)。
+图像默认写入项目 `data/images/`，复用“机器人：下载采集数据”任务下载。
 
 根据容器内构建和实机测试结果在本地继续修改，再次同步并验证。
 进入容器的常用命令见下文；如容器名称或配置变更，先核对实际环境。
@@ -127,9 +158,10 @@ ros2 run aimdk_functions upper_body_control --help
 
 `机器人：下载采集数据` 将所选连接的 `/home/agi/aimdk-fsc/data/` 内的内容单向下载到
 当前项目根目录的 `data/`，本地目录不存在时会创建；机器人端目录不存在时提示“无数据可下载”并正常结束。
-`机器人：下载日志` 将所选连接的 `/home/agi/aimdk-fsc/log/` 内的全部内容
-单向下载到本地 `log/`，包括双臂控制 JSONL 日志及该目录内的构建、调试和验证日志。
-下载前应等待相关程序退出、日志写盘；日志任务要求机器人源目录已存在。
+`机器人：下载日志` 将所选连接的 `/home/agi/aimdk-fsc/log/` 和
+`/home/agi/aimdk-fsc/realsense_ws/log/` 内的全部内容单向下载到本地同名相对路径，
+包括双臂控制 JSONL 日志及两个工作空间的构建、调试和验证日志。
+下载前应等待相关程序退出、日志写盘；不存在的日志目录跳过。
 
 两个下载任务均不删除机器人源文件或本地独有文件；使用 `--checksum` 比较已有文件内容，
 同路径内容不同时更新本地文件。每次采集应使用不同的会话目录名，避免覆盖历史数据。
@@ -140,10 +172,12 @@ ros2 run aimdk_functions upper_body_control --help
 确认所需数据和日志已下载并核对，且没有自研节点继续使用相关目录后，
 在本地项目根目录使用下文的清理命令：先预览，核对后再添加 `--execute` 实际清理。
 
-脚本默认通过 SSH 在机器人宿主机清空 `/home/agi/aimdk-fsc/data` 和 `/home/agi/aimdk-fsc/log`
-的全部内容，包括隐藏文件，保留目录本身及权限；目标目录不存在时提示并跳过。
-添加 `--all` 时清理上述两处及整个 `/home/agi/aimdk-fsc`，包括源码、`build/`、`install/`
-等内容；保留项目根目录，项目内的 `data/`、`log/` 目录也会被删除。
+脚本默认通过 SSH 在机器人宿主机清空 `/home/agi/aimdk-fsc` 下的
+`data/` 和 `log/`，包括隐藏文件，保留目录本身及权限；
+目标目录不存在时提示并跳过。默认清理保留源码、构建和安装产物。
+添加 `--all` 时清空 `/home/agi/aimdk-fsc` 中除 `realsense_ws/` 外的内容，
+包括 overlay 的源码、构建、安装产物及 `docker/vendor` 归档；保留项目根目录。
+两种清理模式均保留完整的 `realsense_ws/`，包括其源码、构建、安装产物和日志。
 绑定挂载使清理结果同时反映到容器内，无需进入、停止或删除容器。
 
 下载与清理独立运行；脚本不检查下载结果、不停止节点、不自动使用 sudo。
@@ -152,8 +186,9 @@ ros2 run aimdk_functions upper_body_control --help
 ### 5. 下次使用
 
 保留现有容器及挂载配置时，默认清理后可继续使用现有代码和构建产物。
-如果使用了 `--all`，下次重新同步后只需运行 `bash scripts/build_overlay.sh` 构建自研包，
-再加载 underlay 和 overlay 环境运行。`/home/agi/aimdk` 不在清理范围内，厂商包无需重建；
+如果使用了 `--all`，下次重新同步后运行 `bash scripts/build_overlay.sh` 构建自研包，
+再加载所用工作空间的安装环境运行。
+固定 underlay 和 `realsense_ws` 保留，均无需因清理而重新构建；
 通常无需重新构建镜像或重新创建容器。
 
 连接地址变更时，更新 `.vscode/tasks.json` 的 `inputs`；清理脚本通过 `--host` 指定地址。
@@ -186,7 +221,7 @@ python3 scripts/robot_cleanup.py --host agi@192.168.31.149
 python3 scripts/robot_cleanup.py --execute
 ```
 
-如需同时清空整个项目目录，先预览全部范围，再执行：
+如需同时清理项目源码和构建产物（保留 `realsense_ws/`），先预览全部范围，再执行：
 
 ```bash
 python3 scripts/robot_cleanup.py --all

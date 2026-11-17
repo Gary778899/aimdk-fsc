@@ -17,6 +17,12 @@
 /overlay/install-*/
 /overlay/log/
 /overlay/log-*/
+/realsense_ws/build/
+/realsense_ws/build-*/
+/realsense_ws/install/
+/realsense_ws/install-*/
+/realsense_ws/log/
+/realsense_ws/log-*/
 
 # Python 虚拟环境、缓存与打包产物。
 .venv/
@@ -38,6 +44,10 @@ htmlcov/
 
 # 独立参考工程暂不纳入当前仓库，后续修改时单独评估。
 /underlay/extra/
+
+# RealSense 第三方源码从 docker/vendor 中的固定版本归档恢复。
+/docker/vendor/
+/realsense_ws/src/
 
 # 实验数据与导出结果；Git 忽略规则不会保护 rsync 目标端文件。
 /rosbags/

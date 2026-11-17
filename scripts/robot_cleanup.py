@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""在本地通过 SSH 预览或清空机器人上的固定项目目录和数据目录。"""
+"""在本地通过 SSH 预览或清理机器人项目，保留 RealSense 工作空间。"""
 
 import argparse
 import subprocess
 import sys
 
 
-# 默认清理数据和日志；全量清理时增加项目目录，不跟随目录内的符号链接。
+# 默认清理数据和 overlay 日志；全量清理保留 RealSense 工作空间，不跟随符号链接。
 REMOTE_SCRIPT = r'''set -euo pipefail
-roots=(/home/agi/aimdk-fsc/data /home/agi/aimdk-fsc/log)
+roots=(
+    /home/agi/aimdk-fsc/data
+    /home/agi/aimdk-fsc/log
+)
 if [[ "$2" == '--all' ]]; then
     roots+=(/home/agi/aimdk-fsc)
 fi
@@ -33,11 +36,14 @@ for root in "${existing_roots[@]}"; do
     printf '\n目录：%s\n' "$root"
     if [[ "$1" == '--execute' ]]; then
         # 包括隐藏文件，保留根目录，禁止跨文件系统遍历；任何删除错误均中止。
-        find "$root" -xdev -depth -mindepth 1 -delete
+        find "$root" -xdev -depth -mindepth 1 \
+            ! -path /home/agi/aimdk-fsc/realsense_ws \
+            ! -path '/home/agi/aimdk-fsc/realsense_ws/*' -delete
         printf '已清空：%s\n' "$root"
     else
         printf '待删除的直接子项（子目录的全部内容也将删除）：\n'
-        find "$root" -mindepth 1 -maxdepth 1 -printf '  %f\n'
+        find "$root" -mindepth 1 -maxdepth 1 \
+            ! -path /home/agi/aimdk-fsc/realsense_ws -printf '  %f\n'
     fi
 done
 '''
@@ -47,8 +53,8 @@ def main():
     """解析本地命令并调用 SSH；返回远程命令退出码，启动失败时返回 1。"""
     parser = argparse.ArgumentParser(
         description=(
-            "通过 SSH 清空 /home/agi/aimdk-fsc/data 和 /home/agi/aimdk-fsc/log，"
-            "添加 --all 同时清空 /home/agi/aimdk-fsc。默认仅预览。"
+            "通过 SSH 清空 /home/agi/aimdk-fsc 下的 data 和 log，"
+            "添加 --all 同时清理项目源码及构建产物，保留 realsense_ws。默认仅预览。"
         ),
         epilog=(
             "执行前必须停止实验和采集，并完成数据下载与核对。"
@@ -59,7 +65,9 @@ def main():
         "--execute", action="store_true", help="实际删除所选目录内的全部内容"
     )
     parser.add_argument(
-        "--all", action="store_true", help="同时清空整个项目目录（含源码和构建产物）"
+        "--all",
+        action="store_true",
+        help="同时清理项目源码和构建产物，保留 realsense_ws 工作空间",
     )
     parser.add_argument(
         "--host", default="agi@10.0.1.41", help="SSH 目标，默认 agi@10.0.1.41（有线）"

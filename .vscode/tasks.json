@@ -49,11 +49,14 @@
             "args": [
                 "-az",
                 "--checksum",
+                "--relative",
+                "--ignore-missing-args",
                 "--itemize-changes",
                 "--human-readable",
                 "--info=progress2",
-                "${input:robotHost}:/home/agi/aimdk-fsc/log/",
-                "${workspaceFolder}/log/"
+                "${input:robotHost}:/home/agi/aimdk-fsc/./log/",
+                "${input:robotHost}:/home/agi/aimdk-fsc/./realsense_ws/log/",
+                "${workspaceFolder}/"
             ],
             "problemMatcher": [],
             "presentation": {
