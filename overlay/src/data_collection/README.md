@@ -1,26 +1,33 @@
 # data_collection 使用说明
 
-当前包版本：`0.2.0`。目标环境为机器人开发板的 Ubuntu 22.04／ROS 2 Humble 容器。
-2026-10-26 用户已在机器人容器完成一次录制；下载数据本地读回共 12,869 帧，实际平均输出 50.002 Hz，正常收尾、无统一帧写盘丢弃，双臂字段有效，但夹爪因名称映射不符全程缺失。随后用户实际反馈确认名称为 `left_claw_joint`／`right_claw_joint`，已据此修正默认映射并补充停止日志；这两项修改仅完成本地静态检查，仍待同步后在容器复验。两路测量时间戳为零、手部源序号为零的问题仍保留质量标记，不能据此认定完整数据验收通过。
+版本 `0.3.0`，适用于机器人 Ubuntu 22.04／ROS 2 Humble、AimDK 1.1 和 X2 Ultra。双臂／夹爪静态录制及 MCAP 读回已验证；full 多模态接入已读回，但存在队列丢弃。新增全身关节来源与在线耗时统计待机器人容器验证。
 
 ## 功能与数据范围
 
-独立订阅机器人已有反馈，通过 JSON 映射生成默认 **50 Hz（20 ms 一帧）** 的双臂与夹爪状态，保存为 JSONL；可额外保存原始 MCAP。不依赖 `locomotion_wrapper`、测试包或控制脚本，不发送运动命令或切换机器人模式。
+按配置只读订阅所选来源，将每条收到的完整消息按来源频率保存到 MCAP。关节反馈、指令、IMU 和图像使用同一会话；在线录制不重采样、不插值，不生成统一帧 JSONL。START／STOP／STATUS 使用原有 ZeroMQ 控制协议。
 
-| 来源 | 默认话题／消息类型 | 采集内容 |
+来源目录为 [x2_sources.json](config/x2_sources.json)，包含消息类型、QoS 和图像关联内参：
+
+| 来源 ID | 话题 | 类型 |
 | --- | --- | --- |
-| 双臂 | `/aima/hal/joint/arm/state`／`aimdk_msgs/msg/JointStateArray` | 左右各 7 关节的位置、速度、原始 effort、错误码及整组状态 |
-| 双夹爪 | `/aima/hal/joint/hand/state`／`aimdk_msgs/msg/HandStateArray` | 左右开度、原始速度／effort、运动状态、故障码及手型 |
+| `arms` | `/aima/hal/joint/arm/state` | `aimdk_msgs/msg/JointStateArray` |
+| `hands` | `/aima/hal/joint/hand/state` | `aimdk_msgs/msg/HandStateArray` |
+| `head_joints` | `/aima/hal/joint/head/state` | `aimdk_msgs/msg/JointStateArray` |
+| `waist` | `/aima/hal/joint/waist/state` | `aimdk_msgs/msg/JointStateArray` |
+| `legs` | `/aima/hal/joint/leg/state` | `aimdk_msgs/msg/JointStateArray` |
+| `arm_commands` | `/aima/hal/joint/arm/command` | `aimdk_msgs/msg/JointCommandArray` |
+| `imu_chest` | `/aima/hal/imu/chest/state` | `sensor_msgs/msg/Imu` |
+| `head_rgb`、`head_depth` | `/aima/hal/sensor/rgbd_head_front/rgb_image`、`depth_image` | `sensor_msgs/msg/Image` |
+| `wrist_left_rgb`、`wrist_left_depth` | `/wrist/left/color/image_rect_raw`、`/wrist/left/depth/image_rect_raw` | `sensor_msgs/msg/Image` |
+| `wrist_right_rgb`、`wrist_right_depth` | `/wrist/right/color/image_rect_raw`、`/wrist/right/depth/image_rect_raw` | `sensor_msgs/msg/Image` |
 
-每侧关节按 `shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_yaw, wrist_pitch, wrist_roll` 输出，输入按名称匹配。关节位置为 rad、速度为 rad/s，双臂 `effort_raw` 为 SDK 原始力矩值，单位为 Nm（N·m），映射保持 `scale=1`、`offset=0`。依据为随 SDK 提供的[关节控制文档中 JointState 定义](../../../underlay/docs/cn/_build/html/zh-cn/dev/Interface/control_mod/joint_control.html#rosmsg-jointstate)。夹爪开度为 0～1，0 闭合、1 全开；夹爪 `effort_raw` 仍保留厂商归一化原值（`vendor_normalized`），不按 Nm 或实际夹持力解释。
+每路图像自动附带 `<来源ID>_info`，类型为 `sensor_msgs/msg/CameraInfo`。头部对应 `rgb_camera_info`／`depth_camera_info`，腕部对应 `color/camera_info`／`depth/camera_info`。RGB 与深度可分别选择。扩展同类型来源时修改目录与预设；新增消息结构时补充显式类型适配。
 
-采样取各来源最近已收到的状态，不插值；保留各流源时间、接收时间、源序号、frame_id、接收年龄及复用标记。缺失或非有限字段用 `null` 和问题标记表示，故障反馈仍保留。50 Hz 是统一帧的目标生成频率，不保证每帧都有新的来源数据，也不代表硬件同步。
+关节来源依据 SDK [motocontrol 示例](../../../underlay/src/py_examples/py_examples/motocontrol.py)与[关节接口定义](../../../underlay/src/aimdk_msgs/interface/robot/hal/msg/JointStateArray.msg)。头部相机、IMU 与 HAL 接口依据 SDK 官方示例及消息定义；腕部设备绑定与话题沿用[相机使用说明](../functions/README.md#左右腕部-d405-与单帧图像)。头部连续图像、腕部深度和多模态并行录制仍需实机核实。原始关节数组顺序、名称、单位、错误和所有源时间字段保持原样；分析端按名称映射关节。
 
 ## 同步与构建
 
-本地先执行 VS Code 的“机器人：预览同步”，确认后再执行“机器人：推送工作区”。两项任务均已纳入本包的源码、JSON 和启动文件；其他排除规则保持原样，`*.md` 仍不推送。
-
-以下命令在**机器人开发容器的工作区根目录**执行。示例使用 colcon 默认的 `build/`、`install/`、`log/`；构建入口及固定 underlay 路径配置见[根目录说明](../../../README.md)。
+使用根目录说明中的现有同步任务，数据根目录及排除规则沿用[项目流程](../../../README.md)。以下命令在机器人开发容器工作区根目录执行。
 
 ### 构建前准备依赖
 
@@ -30,7 +37,7 @@
 | --- | --- |
 | `pkg-config` | CMake 查找 ZeroMQ |
 | `libzmq3-dev` | ZeroMQ C 库、`libzmq.pc` 及 C++ 接口 `zmq.hpp` |
-| `nlohmann-json3-dev` | JSON 映射解析、JSONL 帧及会话元数据；对应 rosdep 键 `nlohmann-json-dev` |
+| `nlohmann-json3-dev` | 来源配置与会话元数据；对应 rosdep 键 `nlohmann-json-dev` |
 | `python3-zmq` | Python 控制客户端 |
 | `libyaml-cpp-dev` | `rosbag2_storage → yaml_cpp_vendor → yaml-cpp` |
 | `libzstd-dev` | `mcap_vendor → zstd_vendor → zstd`；同时提供头文件与链接库，仅装 `zstd` 命令行工具不足 |
@@ -57,109 +64,165 @@ dpkg-query -W -f='${binary:Package}\t${Status}\t${Version}\n' \
   libyaml-cpp-dev libzstd-dev libtinyxml2-dev libconsole-bridge-dev
 ```
 
-本包直接依赖的 ROS 包为 `ament_cmake`、`rclcpp`、`rmw`、`builtin_interfaces`、SDK 的 `aimdk_msgs`、`rosbag2_cpp`、`rosbag2_storage`、`mcap_vendor`，以及运行时的 `launch`、`launch_ros`、`ament_index_python`、`rosbag2_storage_mcap`。标准 apt 安装会递归安装 ROS 包声明的依赖；仅有 `/opt/ros/humble/share/<包名>` 或 CMake 配置文件，不能证明对应系统开发包齐全。
+本包直接依赖的 ROS 包为 `ament_cmake`、`rclcpp`、`rmw`、`builtin_interfaces`、`sensor_msgs`、SDK 的 `aimdk_msgs`、`rosbag2_cpp`、`rosbag2_storage`、`mcap_vendor`，以及运行时的 `launch`、`launch_ros`、`ament_index_python`、`rosbag2_storage_mcap`、`rosbag2_py`、`rclpy`、`rosidl_runtime_py`。标准 apt 安装会递归安装 ROS 包声明的依赖；仅有 `/opt/ros/humble/share/<包名>` 或 CMake 配置文件，不能证明对应系统开发包齐全。
 
 当前机器人容器先复用 SDK 已提供的 ROS 文件，补齐其需要的 Ubuntu 系统开发包；`aimdk_msgs` 继续使用 SDK 工作区提供的版本。若确认某个 ROS 包实际缺失，应先核对 SDK 容器的挂载、版本及厂家支持的安装方式，再决定如何补齐。仅在 ROS 安装路径可写、由 apt 管理且与 SDK 兼容的环境中，才适用标准 `ros-humble-*` apt 安装流程。
 
-当前 CMake 无条件查找 rosbag2／MCAP，因此 `record_raw_mcap=false` 不会免除构建依赖。Humble 官方 `mcap_vendor` 将 LZ4 源码编入自身库，上述链路不额外要求系统 `liblz4-dev`；SQLite 存储插件也不是当前 MCAP 录制所需依赖。依据：[Humble MCAP 构建定义](https://github.com/ros2/rosbag2/blob/humble/mcap_vendor/CMakeLists.txt)、[pluginlib 依赖](https://github.com/ros/pluginlib/blob/humble/pluginlib/package.xml)、[class_loader 依赖](https://github.com/ros/class_loader/blob/humble/package.xml)、[rosdep 系统包映射](https://github.com/ros/rosdistro/blob/master/rosdep/base.yaml)。实际容器版本及缺包情况需在容器内核查，以上清单尚未经机器人容器构建验收。
+MCAP 是当前录制格式。Humble 官方 `mcap_vendor` 将 LZ4 源码编入自身库，上述链路不额外要求系统 `liblz4-dev`；SQLite 存储插件也不是当前 MCAP 录制所需依赖。依据：[Humble MCAP 构建定义](https://github.com/ros2/rosbag2/blob/humble/mcap_vendor/CMakeLists.txt)、[pluginlib 依赖](https://github.com/ros/pluginlib/blob/humble/pluginlib/package.xml)、[class_loader 依赖](https://github.com/ros/class_loader/blob/humble/package.xml)、[rosdep 系统包映射](https://github.com/ros/rosdistro/blob/master/rosdep/base.yaml)。实际容器版本及缺包情况需在容器内核查，以上清单尚未经机器人容器构建验收。
 
 ### 构建
 
+统一入口启动腕部驱动时复用 `aimdk_functions` 已安装的 `config/wrist_cameras.json`，需要 `realsense2_camera`。同步后构建：
+
 ```bash
-bash scripts/build_overlay.sh data_collection
+bash scripts/build_overlay.sh aimdk_functions data_collection
 source /home/agi/aimdk/install/setup.bash
 source /home/agi/aimdk-fsc/install/local_setup.bash
 ```
 
-CMake 只检查依赖，不自动下载或安装。消息依赖来自固定 underlay；SDK版本文件由构建入口通过 `AIMDK_SDK_VERSION_FILE` 指定，缺失时记录unknown，不从本地副本猜测。首次分层前由用户清空旧FSC工作区，后续构建不清理安装产物。
+## 统一启动与来源选择
 
-## 启动与录制
+数据根目录使用 `/home/agi/aimdk-fsc/data`，由项目目录挂载持久化并受同步 `/data/` 排除规则保护。远程清理任务仍会按其既有规则清除此目录。
 
-数据根目录使用 `/home/agi/aimdk-fsc/data`，通过项目目录挂载持久化到机器人宿主机，并受同步任务的 `/data/` 排除规则保护。启动前确认目录可写；远程清理脚本默认清空其中内容，`--all` 会连同整个项目内容一起删除。
+默认只采双臂和夹爪，使用 `profile` 选择 [collection_profiles.json](config/collection_profiles.json) 中的组合：
+
+| 预设 | 内容 |
+| --- | --- |
+| `upper_body`（默认） | 双臂、夹爪反馈 |
+| `whole_body_imu` | 头部、双臂、腰部、双腿、夹爪反馈，以及胸部 IMU；共 6 个话题 |
+| `manipulation` | 双臂、夹爪、HAL 手臂指令、头部 RGBD、双腕 RGB |
+| `camera_check` | 头部 RGBD、双腕 RGB |
+| `full` | 全部关节反馈、HAL 手臂指令、胸部 IMU、头部与双腕 RGBD，以及图像内参 |
 
 ```bash
 ros2 launch data_collection data_collection.launch.py \
-  data_root:=/home/agi/aimdk-fsc/data
+  data_root:=/home/agi/aimdk-fsc/data profile:=manipulation
 ```
 
-节点启动后等待控制指令，不自动录制。在同一容器的另一个终端加载相同 ROS／工作区环境，再执行：
+本轮只采全身关节反馈和胸部 IMU，使用：
+
+```bash
+ros2 launch data_collection data_collection.launch.py \
+  data_root:=/home/agi/aimdk-fsc/data profile:=whole_body_imu
+```
+
+该预设不创建相机订阅或启动腕部驱动，按原频率保存六路反馈。录制前同步并重新构建 `data_collection`，加载 overlay 环境，再沿用 START／STATUS／STOP。头部、腰部和双腿仍需核对真机实际发布者与完整关节名称；按原始消息保留全部关节，不硬编码数量或数组槽位。所选来源未收到消息时按既有规则报告缺流，不自动跳过。
+
+无图像会显著降低输入负载，零丢弃仍以本轮 STATUS、收尾计数和 MCAP 读回为依据。STOP 后核对六路均有数据、submitted=written、dropped=0、队列排空，并核对原始关节名称、状态／故障、源时间和 IMU 字段。完整性标记的含义见下文会话状态说明。
+
+也可用逗号分隔的 `streams` 覆盖预设。例如只录左腕 RGB 和双臂反馈：
+
+```bash
+ros2 launch data_collection data_collection.launch.py \
+  data_root:=/home/agi/aimdk-fsc/data streams:=arms,wrist_left_rgb
+```
+
+入口自动添加关联内参，仅启动所选腕部设备及其图像流。设备序列号、命名空间与图像参数读取现有腕部配置；来源目录中的话题应与该配置保持一致。头部 RGBD、关节和 IMU 复用机器人已有发布者。已经启动腕部驱动时增加 `start_wrist_cameras:=false`，复用其输出。
+
+配置在启动时冻结。切换采集范围时先 STOP，再关闭并重启统一入口。停止录制保持相机运行；关闭启动入口结束由该入口启动的驱动和采集器。
+
+| 参数 | 默认值／用途 |
+| --- | --- |
+| `data_root` | 必填，持久化根目录绝对路径 |
+| `profile`／`streams` | `upper_body`／空；非空 streams 覆盖预设 |
+| `mapping_file` | 安装后的 `config/x2_sources.json` 来源目录 |
+| `profiles_file` | 安装后的 `config/collection_profiles.json` |
+| `start_wrist_cameras` | `true`；只启动选中的腕部设备，false 复用已运行驱动 |
+| `mcap_storage_config` | 安装后的 `config/mcap_storage.yaml` |
+| `queue_capacity` | `512` 条，满时丢弃新消息并按话题计数 |
+| `zmq_bind_address`／`zmq_port` | `127.0.0.1`／`5555` |
+| `robot_model`／`firmware` | `x2-ultra`／`unknown`，保存实际环境信息 |
+
+## 会话控制与状态
+
+启动后等待控制指令。另一个控制终端加载相同环境，再执行：
 
 ```bash
 ros2 run data_collection collection_control START
 ros2 run data_collection collection_control STATUS
-# 完成采集后停止并等待文件关闭。
 ros2 run data_collection collection_control STOP
 ```
 
-控制客户端使用 `#!/usr/bin/env python3`，因此实际解释器由该终端的 `PATH` 决定。若提示无法导入 `zmq`，在同一容器内安装 `python3-zmq`，再检查 `python3 -c 'import sys, zmq; print(sys.executable); print(zmq.__version__)'`。若系统包已安装但仍失败，可用 `/usr/bin/python3` 执行同一检查，区分系统包缺失与虚拟环境／其他 Python 解释器的路径差异。新版客户端会显示解释器路径及原始导入异常；此类导入失败发生在发送请求前，START 尚未发送，无需因此重启已就绪的采集节点。
+START／STOP 成功返回 ACK，失败返回 ERROR。录制中重复 START 保持原会话；正常停止后重复 STOP 幂等。START 的 ACK 表示存储初始化完成，需查看 STATUS 确认各来源实际有数据。STOP 关闭接收门、排空队列、关闭 MCAP 并保存摘要后返回；节点继续等待下一次 START。
 
-`START`／`STOP` 正常返回 `ACK`，失败返回 `ERROR ...`；录制中重复 START、正常停止后重复 STOP 均幂等。START 的 ACK 仅表示存储已就绪，仍需查看 STATUS 中的各流统计，确认实际收到数据。STATUS 返回 JSON，含 `session_dir`、运行状态、写入／丢弃计数及来源质量信息。
+STATUS 包含 `recording_enabled`、会话目录、队列条数／序列化消息字节数及峰值。`raw` 按话题包含 submitted／written／dropped、接收字节数、首末接收时间、首末源时间、实际接收频率和最近消息描述；在线状态额外提供单调接收年龄。图像描述保存分辨率、编码、步长和大小端标记。字节统计仅计序列化消息，不包含队列对象、DDS 缓冲和压缩器内存；队列容量仍按条数限制。
 
-STOP 成功排空队列、关闭文件并写入摘要后，节点终端输出 `Recording stopped: ...; frames=...; data_complete=...`；重复 STOP 输出 `Recording already stopped`。收尾失败仍返回 ERROR 并记录异常，不输出成功停止日志。STOP 结束当前录制，节点继续运行，等待 STATUS 或下一次 START；正常有数据会话停止后可核对 STATUS 中 `sampling_enabled=false`、`closed=true`、`complete=true`、`queue_pending=0`。`data_complete=false` 仍可能来自字段或来源时间质量问题，不等同于停止失败。
+源时间为零、重复、回退，以及 SDK 测量时间／序号异常均计数。保留源时间，不替换为本机时间；单调时钟仅用于接收频率与年龄。MCAP 的消息记录时间使用回调入口 ROS 接收时间，原消息保存其源时间。这些时间不构成硬件同步证明，跨设备配对在离线分析中完成。
 
-客户端默认连接 `tcp://127.0.0.1:5555`，等待超时为 5000 ms，可通过 `--endpoint`、`--timeout-ms` 修改。STOP 超时不代表文件已经关闭，应继续查询 STATUS。
+`complete` 表示正常关闭且无存储错误；`data_complete` 还要求每个选中话题至少成功写入一条消息且无队列丢弃。时间异常计数另行评估；该标记不包含字段有效性、同步精度或样本数量验收。未选来源不计为缺流。
 
-| 启动参数 | 默认值／用途 |
+控制客户端默认连接 `tcp://127.0.0.1:5555`，超时 5000 ms，可用 `--endpoint`／`--timeout-ms` 调整。STOP 超时后继续查询 STATUS，确认 `recording_enabled=false`、`closed=true`、`queue_pending=0`。Python 客户端需使用可导入 `zmq` 的解释器。
+
+## 存储与读回
+
+每次 START 创建独立的 `data_<北京时间日期>_<时分秒>_<九位纳秒>_UTCp0800_<PID>_<序号>/`。日期由系统会话开始时间生成，固定 UTC+08:00；历史目录名保留。
+
+| 文件 | 内容 |
 | --- | --- |
-| `data_root` | 必填，持久化数据根目录的绝对路径 |
-| `mapping_file` | 安装后的 `config/x2_upper_body.json` |
-| `record_raw_mcap` | `false`；设为 `true` 时额外按来源频率录制完整 SDK 原始消息 |
-| `queue_capacity` | `512`；异步写盘队列的记录条目容量，满时丢弃新记录并计数 |
-| `zmq_bind_address`／`zmq_port` | `127.0.0.1`／`5555` |
-| `robot_model`／`firmware` | 均为 `unknown`，可填写实际机型与固件版本，写入会话元数据 |
+| `raw/*.mcap`、`raw/metadata.yaml` | 所选话题的完整 ROS 消息及 rosbag2 元数据 |
+| `session.json` | schema_version=2，生效来源配置、环境、计数及收尾结果 |
+| `mcap_storage.yaml` | 本次会话实际使用的容器压缩配置快照 |
 
-## 文件与读回
+默认 Zstd／Fast 分块无损压缩，保留消息索引与摘要。RGB 和深度均保存原始 Image，不进行 JPEG 或视频编码。MCAP 可在压缩无收益时保存未压缩块；配置依据 [Humble MCAP 插件](https://github.com/ros2/rosbag2/blob/humble/rosbag2_storage_mcap/README.md#writer-configuration)。实际体积、持续写入速度和 Jetson 负载需录制测量。
 
-每次新会话创建独立的 `data_<YYYYMMDD>_<HHMMSS>_<九位纳秒>_UTCp0800_<PID>_<序号>/` 目录，例如：
-
-```text
-data_20261026_202654_020248086_UTCp0800_43309_0/
-```
-
-日期与时分秒固定使用北京时间（UTC+08:00），不依赖容器默认时区；时间取自 START 初始化会话时的系统时钟，不代表第一帧传感器时间。保留纳秒、进程 PID、从零开始的进程内递增序号及目录创建冲突重试，避免会话重名。`session.json` 中的 `started_system_time_ns` 等整数纳秒字段保持不变。
-
-该命名规则仅用于更新后的新会话；历史 `collection_<Unix纳秒>_<PID>_<序号>/` 目录无需重命名，仍可用相同工具读回。此调整仅完成本地静态检查，待同步后在机器人容器内构建与录制验证。
-
-| 文件／目录 | 内容 |
-| --- | --- |
-| `frames.jsonl` | 每行一帧，包含 `arms`、`grippers`、`streams` 和整数纳秒时间 |
-| `session.json` | 映射配置快照、版本／环境元数据、计数、关闭结果和质量摘要 |
-| `raw/` | 仅启用原始录制时生成，保存 rosbag2／MCAP |
-
-STOP 后，将 STATUS 返回的实际 `session_dir` 代入；下方 `/ABSOLUTE/SESSION_DIR` 也是占位符：
+STOP 后用 STATUS 中的实际会话目录替换下方占位符：
 
 ```bash
-ros2 run data_collection inspect_collection /ABSOLUTE/SESSION_DIR
+ros2 run data_collection inspect_collection /ABSOLUTE/SESSION_DIR --verify-mcap
 ```
 
-工具输出 JSON 报告，核对帧结构、关节顺序、时间推进与会话计数，并统计实际输出频率、采样间隔、来源复用、缺失、无效数据和故障。退出码：`0` 表示按当前规则数据完整，`1` 表示质量不完整或未正常收尾，`2` 表示文件损坏、摘要矛盾或读取失败。
+工具遍历 MCAP、反序列化所有消息，核对话题、类型及逐话题写入数，检查图像尺寸、步长与数据长度，并报告源时间重复和回退。退出码 0 表示当前会话完整性规则通过，1 表示不完整，2 表示读取、结构或摘要不一致。仍需抽查图像内容、关节名称和实际数据意义。
 
-`complete` 表示会话已正常关闭且没有存储错误，`data_complete` 还检查无数据、缺流、无效字段、已观察异常及记录丢弃。仍应结合实际频率、复用比例与接收年龄判断可用性，不能据此认定有 50 Hz 的独立新样本。未收尾会话会报告实际可读数据及摘要差异；当前工具**不验证原始 MCAP 内容**。本版本不提供 CSV 导出或动作回放。
+不带 `--verify-mcap` 时仅用标准库检查摘要，新会话不读 MCAP，报告 `raw_mcap_verified=false`；可在本地使用。历史 schema_version=1 会话继续按原规则读取 `frames.jsonl`；历史原始 MCAP 也可在 ROS 环境使用上述读回选项。旧 `record_raw_mcap` 启动参数已移除，新录制始终保存 MCAP。
 
-## 更新后验证
+## 压缩与写盘耗时诊断
 
-本次移除旧启动别名，统一使用`data_collection.launch.py`。rsync保护构建及安装产物，重新构建不会保证删除旧启动文件；在机器人端核实`ros2 pkg prefix data_collection`指向的安装目录后，定向清理残留的旧启动文件。同步排除规则保持现状。
+在机器人 Humble 容器内重新构建 `data_collection` 后，按原命令录制并 STOP，`session.json` 与 STATUS 自动包含 `timing`。统计只累计成功完成的阶段，单位为纳秒，不改变图像、压缩或队列配置：
 
-在机器人Humble容器构建后，用当前入口完成START、STATUS、STOP和读回：录制中重复START保持原会话，正常停止后重复STOP返回ACK；STATUS计数与读回结果一致。启用MCAP时检查原始录制输出。队列满仍丢弃新记录并分别计数，写盘错误仍关闭接收门并保留首次原因；这些异常路径尚待容器验证。
+| 字段 | 含义 |
+| --- | --- |
+| `serialization` | 回调内完整消息序列化的墙钟耗时，含后续入队被丢弃的消息 |
+| `queue_wait` | 消息成功入队至工作线程取出的等待时间 |
+| `write_call` | rosbag2 Writer::write 调用的墙钟与当前线程 CPU 耗时 |
+| `write_by_topic` | 按触发该次 write 调用的话题累计耗时 |
+| `close_call` | Writer::close 调用，含尾块、索引及元数据收尾 |
+| `stop_drain_wall_ns` | STOP 通知后等待写入线程排空、退出的墙钟耗时 |
 
-## 修改映射与迁移平台
+每项包含调用数、累计墙钟、平均和最大墙钟；只有 write／close 统计线程 CPU，其余 `total_cpu_ns=null`。queue_wait 为逐消息等待的累计值，不能当作 CPU 消耗或与会话时长直接比较。MCAP 块可能由不同话题共同构成，因此 write_by_topic 表示触发压缩／写入的调用来源，不是该话题独占的压缩开销。累计统计不提供逐调用时间线或分位数。
 
-以 [config/x2_upper_body.json](config/x2_upper_body.json) 为模板，主要配置如下：
+write 调用内部同时包含 MCAP 缓冲、块压缩和文件写入；close 也不代表执行了 fsync。墙钟与线程 CPU 的差值可能包含 I/O 等待或线程调度，不能直接等同于磁盘耗时。
 
-- `sample_rate_hz`：统一帧目标频率，默认 50。
-- `streams`：来源标识、话题、消息类型、QoS、时间／序号字段路径及可选 `frame_id_path`、`state_path`。
-- `arms.left/right`：来源数组、名称字段、7 个关节的来源名称与字段映射；`joint_fields` 可按统一关节名覆盖单个关节的完整字段规则。
-- `grippers.left/right`：来源数组、夹爪名称、手型路径与期望值、开度和状态字段映射；当前 X2 实机反馈核实为左侧 `left_claw_joint`、右侧 `right_claw_joint`，期望手型为 `CLAW=2`。其他机型／固件仍应核对实际反馈名称。映射在节点启动时加载，修改后须重新启动节点；旧会话中的 null 夹爪字段不会被补回。
+为分别测量压缩、文件 write 和 fsync，停止录制后在**同一机器人、同一数据磁盘**执行离线基准。它复用已录 MCAP 的原始块，无需 ROS 消息类型，不订阅话题：
 
-数值转换为 `输出 = 原值 × scale + offset`，可配置位置／速度的单位、方向与零位；`*_raw` 和整数状态字段保持原值，不允许缩放或偏置。配置启动时校验并冻结，修改后需重启节点。
+```bash
+ros2 run data_collection benchmark_collection_io \
+  /home/agi/aimdk-fsc/data/data_20261112_205504_235385543_UTCp0800_115218_0
+```
 
-通过 `mapping_file:=/ABSOLUTE/PATH/platform.json` 选择自定义配置。当前输入适配器仅支持表中的两种 SDK 消息；相同消息结构主要修改 JSON，其他消息结构或通信协议需要补充输入适配器，不能仅更改消息类型字符串。
+也可直接运行同步后的脚本，无需为该脚本单独构建：
 
-## 实现与异常处理入口
+```bash
+python3 src/data_collection/scripts/benchmark_collection_io.py \
+  /home/agi/aimdk-fsc/data/data_20261112_205504_235385543_UTCp0800_115218_0
+```
 
-- `DataCollectionNode`管理START／STOP、采样门及会话代号，关闭采样门后再等待文件排空，防止旧回调跨会话写入。
-- `StateMapper`负责来源及字段校验，用质量标记保留缺失、故障和时间异常。
-- `SessionWriter::Impl::enqueue_locked()`统一处理JSONL帧与原始消息的队列容量、丢弃计数和入队通知；`fail_locked()`统一锁存首次存储错误并关闭接收门。
-- `finish()`统一排空、关闭与摘要写入；STATUS和读回检查分别保留运行时状态与落盘数据核对职责。
+默认测量全部块；首次快速检查可增加 `--max-chunks 100`。`--zstd-level` 默认 `-3`，对应 MCAP Fast 的数值级别，依据 [MCAP 压缩级别映射](https://github.com/foxglove/mcap/blob/releases/cpp/v1.1.0/cpp/mcap/include/mcap/writer.inl#L195)。脚本从系统 libzstd 读取版本并写入结果，当前不自动替换录制配置。
 
-本次整合仅完成本地静态检查，尚未在机器人容器构建或验证。
+流程为逐块读取并解压，在计时区间外分配缓冲，再分别计时 ZSTD_compress2、文件 write，最后单独测量一次 fsync。文件 write 可能只写入页缓存；fsync 耗时单列，并计入汇总写入吞吐。读取、解压、内存分配、诊断日志和 MCAP 索引处理不计入阶段吞吐；读源文件与诊断文件仍会竞争同一磁盘。此结果是离线基准，不是原录制过程中压缩和 I/O 的精确拆分，也不是纯磁盘设备性能测试。
+
+输出默认为来源会话内的 `io_benchmark_<时间>/`，包含 `chunks.jsonl` 和 `summary.json`，随现有数据下载流程取回。临时文件也放在该目录的文件系统，结束时自动删除；测试期间需要容纳一次重新压缩输出的空间。可用 `--output-dir` 指定新的结果目录及目标写入磁盘，原始 MCAP 保持不变。不要与正式录制同时运行此基准。
+
+结果重点查看 compression_input_MB_per_s、write_output_MB_per_s_including_final_fsync、combined_stage_input_MB_per_s，以及阶段 CPU／墙钟耗时。原始输入吞吐与压缩后输出吞吐的计量基准不同，比较时使用相应字节数；本次 full 仅图像约 230.4 MB/s，可作为负载量级参考，不新增通过／中止门槛。
+
+本轮只完成本地语法与静态检查，未在本地或机器人执行基准，未构建／运行带计时的采集节点。建议取回一段新 full 会话的 session.json 及离线基准 summary.json，再结合队列丢弃判断瓶颈。
+
+## 容器验收
+
+1. 使用 whole_body_imu：确认六个预期话题均有数据，头部／腰部／双腿关节完整名称可读回，反馈／IMU 数值与原始状态保留，逐话题无丢弃且正常收尾。
+2. 默认预设录制：确认仅双臂／夹爪两个话题，原始关节名称、错误及时间字段读回一致，新目录不生成 frames.jsonl。
+3. 单独选择 `wrist_left_rgb`：确认仅左腕彩色流及内参写入，右腕不由本入口启动，独立相机会话能正常 STOP 和读回。
+4. 使用 `manipulation`，再复用已启动驱动：确认头部 RGBD、双腕 RGB、反馈及指令逐话题有数据，内参存在；抽查图像与深度编码及标定内容。
+5. 全量短录制：记录时长、MCAP 体积、实际接收频率、队列峰值、丢弃和 Jetson 负载；检查深度原始数值与容器压缩配置。
+6. 重复 START、重复 STOP 及连续两次会话：确认幂等、收尾计数守恒、队列清空且消息不跨会话。已选来源不发布时如实报告无数据。
+
+C++ 节点、MCAP 写入和 ROS 启动均由用户同步后在机器人容器构建、运行与验证。本地旧 JSONL 验证结果不代表本版多模态验收通过。

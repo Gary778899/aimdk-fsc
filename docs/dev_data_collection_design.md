@@ -1,6 +1,6 @@
 # 官方原始话题采集器：需求与结构设计
 
-状态：后续扩展设计，2026-10-30 整理。适用 SDK `aimdk v1.1.0-gfaf4c94`，执行环境为机器人 Ubuntu 22.04／ROS 2 Humble 容器。
+状态：历史扩展设计，2026-10-30 整理；2026-11-12 新录制已改为选择性压缩 MCAP，当前契约见[采集包说明](../overlay/src/data_collection/README.md)。本文保留早期规划依据，其中默认范围、门槛和 JSONL 集成方式不作为当前要求。适用 SDK `aimdk v1.1.0-gfaf4c94`，执行环境为机器人 Ubuntu 22.04／ROS 2 Humble 容器。
 
 ## 1. 目标与现有实现
 
@@ -8,7 +8,7 @@
 
 本设计面向后续研究与开发任务，定义可配置话题录制、START／STOP／STATUS、质量统计和离线读回检查。采用显式类型注册，下表六种消息类型及同类型多话题配置按后续阶段任务需求分批实现；按原消息类型保存完整字段、数组顺序和异常值。
 
-实现位于 `overlay/src/data_collection/`，沿用 C++、rosbag2／MCAP 和 ZeroMQ。当前包提供统一 JSONL 帧及可选原始 MCAP，见[采集包说明](../overlay/src/data_collection/README.md)。本设计与该功能的集成方式列于第 8 节。
+实现位于 `overlay/src/data_collection/`，沿用 C++、rosbag2／MCAP 和 ZeroMQ。当前包已采用 MCAP 统一录制，见[采集包说明](../overlay/src/data_collection/README.md)。本设计与该功能的集成方式列于第 8 节。
 
 ## 2. 话题与默认配置
 

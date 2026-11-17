@@ -45,7 +45,7 @@
 | 自研功能命令 | `overlay/src/functions/` → `aimdk_functions` | 独立实用功能：`volume_control.py`（音量／静音）、`upper_body_control.py`（URS 下单臂／双臂关节、TCP及夹爪控制）。统一规划在 `upper_body_control_core.py`，执行在 `upper_body_execution.py`，反馈校验复用 `dual_arm_control_core.py`，日志在 `upper_body_diagnostics.py`；不依赖测试包，也不作为所有公共代码的汇总包。 |
 | 自研遥操输入 | `overlay/src/remote_control/` → `remote_control` | XR完整帧、SDK输入、Grip会话、坐标映射和输入日志；不依赖AimDK。机器人双臂IK与执行适配保留在`aimdk_functions`。 |
 | 自研只读观测 | `overlay/src/locomotion_wrapper/` → `locomotion_wrapper` | 厂商关节状态聚合与标准 IMU 校验转发，不含运动控制或策略推理。节点在 `src/hardware_wrapper_node.cpp`，纯校验在 `include/locomotion_wrapper/state_validation.hpp`，配置在 `config/`，启动在 `launch/`，校验测试在 `test/`；`joint_watch.py` 仅监视标准关节状态。本轮不参与同步或构建。 |
-| 自研数据采集 | `overlay/src/data_collection/` → `data_collection` | 独立订阅 SDK 双臂／夹爪反馈，生成统一 JSONL 帧并可选录制原始 MCAP，通过 ZeroMQ START／STOP／STATUS 控制录制。节点在 `src/data_collection_node.cpp`；`launch/data_collection.launch.py` 单独启动采集器。 |
+| 自研数据采集 | `overlay/src/data_collection/` → `data_collection` | 按配置只读订阅 SDK 反馈、HAL 手臂指令、IMU、头部 RGBD 与腕部图像，统一保存压缩 MCAP，通过 ZeroMQ START／STOP／STATUS 控制录制。节点在 `src/data_collection_node.cpp`；`launch/data_collection.launch.py` 统一启动采集器及所选腕部驱动。 |
 
 新增 `aimdk_test`／`aimdk_functions` 命令时，将模块放在相应 Python 包中，在各自 `setup.py` 的 `console_scripts` 注册，并在 `package.xml` 声明依赖；命令使用 ROS 2 包名，而非外层目录名，如 `ros2 run aimdk_test head_test`。
 
