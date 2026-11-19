@@ -89,9 +89,11 @@ class OnlineExecutionTests(unittest.TestCase):
         self.assertIsNone(self.port.background_error)
 
     def test_publish_records_selected_feedback_and_call_interval(self):
-        """发布日志关联本次使用的反馈快照，并保留发布调用的开始和结束时刻。"""
+        """发布日志关联反馈快照，并保留ROS戳和开始时刻的整数纳秒。"""
         with patch('aimdk_functions.upper_body_teleop_execution.time.monotonic',
-                   side_effect=[100., 100., 100.001, 100.003]), \
+                   side_effect=[100., 100., 100.003]), \
+                patch('aimdk_functions.upper_body_teleop_execution.time.monotonic_ns',
+                      return_value=100_001_000_000), \
                 patch('aimdk_functions.upper_body_teleop_execution.build_upper_body_command',
                       side_effect=message):
             self.port.begin_online(self.store, self.frame)
@@ -100,6 +102,8 @@ class OnlineExecutionTests(unittest.TestCase):
         self.assertEqual(row['arm_feedback_serial'], 7)
         self.assertEqual(row['arm_feedback_stamp_s'], 99.97)
         self.assertEqual(row['arm_feedback_received_monotonic_s'], 99.98)
+        self.assertEqual(row['command_stamp_ns'], 100_000_000_000)
+        self.assertEqual(row['publish_begin_monotonic_ns'], 100_001_000_000)
         self.assertEqual(row['publish_begin_monotonic_s'], 100.001)
         self.assertEqual(row['publish_end_monotonic_s'], 100.003)
 

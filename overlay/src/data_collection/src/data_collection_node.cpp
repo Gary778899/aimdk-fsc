@@ -290,6 +290,17 @@ DataCollectionNode::ReceiveContext DataCollectionNode::receive_context()
     entry_generation, received_ros, received_monotonic};
 }
 
+Json DataCollectionNode::clock_anchor()
+{
+  const auto before = monotonic_now_ns();
+  const auto system = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  const auto ros = get_clock()->now().nanoseconds();
+  const auto after = monotonic_now_ns();
+  return Json{{"monotonic_before_ns", before}, {"system_time_ns", system},
+    {"ros_time_ns", ros}, {"monotonic_after_ns", after}};
+}
+
 void DataCollectionNode::fail_session(const std::string & reason, uint64_t generation)
 {
   std::lock_guard<std::mutex> control_lock(control_mutex_);
@@ -300,6 +311,7 @@ void DataCollectionNode::fail_session(const std::string & reason, uint64_t gener
     }
     recording_enabled_ = false;
     ++generation_;
+    writer_->record_clock_anchor("gate_closed", clock_anchor());
     node_error_ = reason;
   }
   writer_->fail(reason);
@@ -324,6 +336,7 @@ void DataCollectionNode::start_recording()
     // 开门时再次推进代号，拒绝 writer 初始化期间已进入但尚未取锁的回调。
     ++generation_;
     recording_enabled_ = true;
+    writer_->record_clock_anchor("gate_opened", clock_anchor());
   }
   RCLCPP_INFO(get_logger(), "Recording started: %s", path.c_str());
 }
@@ -334,8 +347,12 @@ void DataCollectionNode::stop_recording()
   const bool already_closed = writer_->status().at("closed").get<bool>();
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    const bool was_recording = recording_enabled_;
     recording_enabled_ = false;
     ++generation_;
+    if (was_recording) {
+      writer_->record_clock_anchor("gate_closed", clock_anchor());
+    }
   }
   // 门控关闭之后再排空，避免在接收锁内等待磁盘 I/O。
   // 只有排空、关闭和摘要写入成功返回后才输出停止日志；异常仍交给调用者报告。
@@ -430,6 +447,9 @@ void DataCollectionNode::zmq_server_loop()
         std::lock_guard<std::mutex> control_lock(control_mutex_);
         {
           std::lock_guard<std::mutex> lock(state_mutex_);
+          if (recording_enabled_) {
+            writer_->record_clock_anchor("gate_closed", clock_anchor());
+          }
           recording_enabled_ = false;
           ++generation_;
           node_error_ = error.what();

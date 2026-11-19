@@ -41,6 +41,8 @@ private:
 
   /** @brief 捕获会话与入口时间。 @return 当前回调上下文，未录制时 active 为 false。 */
   ReceiveContext receive_context();
+  /** @brief 返回接收门边界附近的一组机器人时钟，含采样的单调时间上下界。 */
+  Json clock_anchor();
   /** @brief 按配置创建已支持的 SDK 订阅；未知类型或 QoS 抛出异常。 */
   void create_inputs();
   /** @brief 锁存当前会话的输入适配异常并停止接收。

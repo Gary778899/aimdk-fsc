@@ -180,6 +180,7 @@ public:
       state_ = "STARTING";
       last_error_.clear();
       closed_ = false;
+      clock_anchors_ = Json::object();
     }
     try {
       std::filesystem::create_directories(root_);
@@ -277,7 +278,14 @@ public:
       {"queue_pending", queue_.size()}, {"queue_peak", queue_peak_},
       {"queue_bytes", queue_bytes_}, {"queue_peak_bytes", queue_peak_bytes_},
       {"raw", raw_counts_}, {"last_error", last_error_},
-      {"mapping", mapping_}, {"metadata", metadata_}};
+      {"mapping", mapping_}, {"metadata", metadata_}, {"clock_anchors", clock_anchors_}};
+  }
+
+  /** @brief 记录接收门边界，重复关闭保留首次读数。 */
+  void record_clock_anchor(const std::string & boundary, const Json & clocks)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    clock_anchors_.emplace(boundary, clocks);
   }
 
   /** @brief 提交配置话题的独占序列化样本及接收时刻；参数非法抛出异常。 */
@@ -572,6 +580,7 @@ private:
   int64_t started_ns_{0};
   int64_t ended_ns_{0};
   Json raw_counts_;
+  Json clock_anchors_ = Json::object();
   DurationStats write_timing_;
   DurationStats queue_wait_timing_;
   DurationStats serialization_timing_;
@@ -617,6 +626,12 @@ Json SessionWriter::stop()
 Json SessionWriter::status() const
 {
   return impl_->status();
+}
+
+/** @brief 保存指定接收门边界的首组时钟读数，供状态查询及最终摘要使用。 */
+void SessionWriter::record_clock_anchor(const std::string & boundary, const Json & clocks)
+{
+  impl_->record_clock_anchor(boundary, clocks);
 }
 
 /** @brief 提交原始样本并返回是否成功入队；参数错误抛出异常。 */

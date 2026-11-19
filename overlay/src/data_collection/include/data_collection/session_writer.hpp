@@ -29,6 +29,8 @@ public:
   Json stop();
   /** @brief 返回当前运行状态、会话目录、计数与数据完整性摘要。 */
   Json status() const;
+  /** @brief 保存指定接收门边界的首组系统、ROS 和单调时钟读数。 */
+  void record_clock_anchor(const std::string & boundary, const Json & clocks);
   /** @brief 提交原始消息及含 receive_monotonic_ns、serialization_wall_ns 的描述；未录制或队列已满返回 false。 */
   bool enqueue_raw(
     const std::string & topic, const std::string & type,

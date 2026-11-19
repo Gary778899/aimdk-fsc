@@ -191,21 +191,24 @@ class UpperBodyTeleopExecutor(UpperBodyExecutor):
                 sent_at = time.monotonic()
                 self.check_input_timeout(sent_at)
                 gap = check_publish_gap(self.last_publish, sent_at)
-                publish_begin = time.monotonic()
+                publish_begin_ns = time.monotonic_ns()
                 self.publisher.publish(msg)
                 publish_end = time.monotonic()
                 self.last_sent, self.last_publish = target, sent_at
                 self.last_ideal, self.last_ideal_time = ideal, publish_end
                 self.last_sent_compensation = details
                 self.sequence += 1
+                command_stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
                 self.diagnostics.record(
                     'command_published', sequence=msg.header.sequence, input_seq=value.input_seq,
                     accepted_monotonic_s=value.accepted_monotonic_s,
                     arm_rad=list(target.arm_rad), ideal_arm_rad=list(ideal.arm_rad),
                     ik_goal_arm_rad=list(goal.arm_rad), joint_approach=approach,
                     hand_openings=list(target.hand_openings), compensation=details,
-                    command_stamp_s=msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9,
-                    publish_begin_monotonic_s=publish_begin,
+                    command_stamp_ns=command_stamp_ns,
+                    command_stamp_s=command_stamp_ns / 1_000_000_000,
+                    publish_begin_monotonic_ns=publish_begin_ns,
+                    publish_begin_monotonic_s=publish_begin_ns / 1_000_000_000,
                     publish_end_monotonic_s=publish_end,
                     arm_feedback_serial=values['arm'].serial,
                     arm_feedback_stamp_s=values['arm'].stamp,
