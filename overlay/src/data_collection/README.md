@@ -187,6 +187,68 @@ STATUS 包含 `recording_enabled`、会话目录、队列条数／序列化消�
 
 控制客户端默认连接 `tcp://127.0.0.1:5555`，超时 5000 ms，可用 `--endpoint`／`--timeout-ms` 调整。STOP 超时后继续查询 STATUS，确认 `recording_enabled=false`、`closed=true`、`queue_pending=0`。Python 客户端需使用可导入 `zmq` 的解释器。
 
+## 单次示教录制与读回
+
+本流程适用 X2 Ultra、SDK 1.1、PICO 遥操。在机器人 Humble 容器构建 `remote_control`、
+`aimdk_functions`、`data_collection` 后复验。先在已加载安装环境的容器终端显式选择
+`xr_raw`，并按任务选关节、指令或相机来源。以下是无图像的起步组合：
+
+```bash
+ros2 launch data_collection data_collection.launch.py \
+  data_root:=/home/agi/aimdk-fsc/data/experiments/peg_in_hole \
+  streams:=arms,hands,arm_commands,xr_raw
+```
+
+在容器另一终端准备一个条件 JSON 对象。示例字段如下，实际条件按实验方案填写。
+
+```json
+{
+  "protocol": "peg-in-hole-v1",
+  "group": "compensation-off",
+  "repetition": 1,
+  "initial_condition": "起始关节姿态与夹具参考编号",
+  "tool_and_load": "实际工具和负载",
+  "compensation": false
+}
+```
+
+在机器人项目根目录执行录制命令。`--` 后传入现有遥操参数。执行示教时由操作者按
+[上肢遥操执行约定](../functions/README.md#遥操持续执行)进入 URS/RUNNING 后显式添加 `--execute`。
+示例按只读观测启动，结束时用 Ctrl-C 收尾。
+
+```bash
+python3 scripts/record_trial.py record --conditions /实际路径/conditions.json -- \
+  --input-config /实际路径/input.json --mapping-config /实际路径/mapping.json \
+  --device-id 实际设备ID --load-description '实际姿态、工具与负载' --no-compensation
+```
+
+入口沿用 START／STOP，使用 STATUS 返回的新会话目录，并将同一个试次编号写入两份 JSONL。
+一个采集端点由一个录制入口管理。先结束遥操并等待日志落盘，入口再停止采集并记录收尾状态。
+会话产物为 `experiment.json`、采集器的 `session.json`、`raw/`、`mcap_storage.yaml`、
+`xr.jsonl`、`control/` 和 `console.txt`。可选现场备注放在会话目录的 `notes.md`。
+运行退出、MCAP 收尾和任务结果分别记录；每次重试创建新会话。
+
+录制结束后，将 `SESSION` 设置为入口输出的实际会话路径。在同一容器执行读回和任务标注：
+
+```bash
+python3 scripts/record_trial.py verify "$SESSION"
+python3 scripts/record_trial.py label "$SESSION" --outcome success --reason '按实验方案核实'
+```
+
+`verify` 保存 `readback.json`。任务标注默认 `unlabeled`，也可填写
+`success`、`failure` 或 `aborted`，并用 `--stage` 记录结果对应的任务阶段。
+
+`xr_raw` 保存遥操进程发布的 `/remote_control/xr/raw`，类型为 `std_msgs/msg/String`。
+JSON 信封 `remote_control.xr_raw.v1` 保留 SDK 原始 Base64 载荷、回调类型、设备、
+`sdk_connection_id`、`callback_seq`、机器人侧系统／单调接收纳秒及退出排空标记。
+遥操入口在解析及筛选前发布，使用 best-effort／volatile。原始 PICO 源时戳在载荷中，
+MCAP 索引使用采集器的 ROS 接收时戳。`verify` 使用目标设备与实际输入配置核对 Tracking、
+可解析双手帧、断连、序号缺口，并和 XR JSONL 按原始事件标识与内容对账。
+
+用现有“机器人：下载采集数据”任务填入 `peg_in_hole/<会话目录名>` 下载一次实验。
+验收先完成一轮含双臂和夹爪动作的短示教，核对目标设备 Tracking、XR 对账和实际控制发布，
+以及本地目录和标签。再执行一轮只读断连录制，检查 MCAP 断连事件、进程退出原因和已录数据。
+
 ## 存储与读回
 
 每次 START 按开始记录时的北京时间创建 `YYYYMMDD_HHMMSS/`，如 `20261117_143025/`。同目录重名时追加 `_1`、`_2` 等递增序号；历史目录名保留。

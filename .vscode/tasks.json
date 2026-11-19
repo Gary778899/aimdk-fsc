@@ -28,11 +28,10 @@
             "type": "process",
             "command": "bash",
             "args": [
-                "-c",
-                "ssh \"$2\" 'if [ -d /home/agi/aimdk-fsc/data ]; then exit 0; elif [ ! -e /home/agi/aimdk-fsc/data ]; then exit 3; else echo \"数据路径不是目录\" >&2; exit 1; fi'\nstatus=$?\nif [ \"$status\" -eq 3 ]; then\n    printf '无数据可下载：机器人 data 目录不存在。\\n'\n    exit 0\nelif [ \"$status\" -ne 0 ]; then\n    exit \"$status\"\nfi\nexec rsync -az --checksum --itemize-changes --human-readable --info=progress2 \"$2:/home/agi/aimdk-fsc/data/\" \"$1\"",
-                "download-data",
-                "${workspaceFolder}/data/",
-                "${input:robotHost}"
+                "${workspaceFolder}/scripts/download_collection.sh",
+                "${workspaceFolder}/data",
+                "${input:robotHost}",
+                "${input:collectionTrial}"
             ],
             "problemMatcher": [],
             "presentation": {
@@ -162,6 +161,12 @@
         }
     ],
     "inputs": [
+        {
+            "id": "collectionTrial",
+            "type": "promptString",
+            "description": "输入 all 下载全部，或输入 任务/会话 下载单次示教",
+            "default": "all"
+        },
         {
             "id": "robotHost",
             "type": "pickString",

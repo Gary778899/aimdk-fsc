@@ -147,6 +147,11 @@ CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build \
 
 ### 3. 下载数据并保存日志
 
+示教会话按[单次示教录制流程](overlay/src/data_collection/README.md#单次示教录制与读回)在
+`data/experiments/<任务>/<会话>` 保存。运行“机器人：下载采集数据”时填入
+`<任务>/<会话>`，一次取回已确认收尾的 MCAP、实验清单、遥操和控制日志。
+任务目录名使用英文字母、数字、下划线或连字符。选择 `all` 下载全部数据。
+
 轨迹上传使用 VS Code 任务`机器人：推送轨迹`，将本地`data/trajectories/`内的内容
 推送到所选连接的`/home/agi/aimdk-fsc/data/trajectories/`，自动创建远端目录。
 任务使用`--checksum`比较内容，同路径内容不同时覆盖远端文件，保留远端独有文件；
@@ -156,8 +161,8 @@ CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build \
 2. 在本地 VS Code 按需运行 `机器人：下载采集数据` 和 `机器人：下载日志`；清理前应完成所需数据及日志的下载。
 3. 确认各任务正常结束，核对本地会话文件和日志，必要时读回数据。
 
-`机器人：下载采集数据` 将所选连接的 `/home/agi/aimdk-fsc/data/` 内的内容单向下载到
-当前项目根目录的 `data/`，本地目录不存在时会创建；机器人端目录不存在时提示“无数据可下载”并正常结束。
+`机器人：下载采集数据` 将所选连接的 `/home/agi/aimdk-fsc/data/` 内的内容按相对路径单向下载到
+当前项目根目录的 `data/`，本地目录不存在时会创建。选择 `all` 时，如果机器人端 data 目录不存在，任务提示无数据并正常结束。
 `机器人：下载日志` 将所选连接的 `/home/agi/aimdk-fsc/log/` 和
 `/home/agi/aimdk-fsc/realsense_ws/log/` 内的全部内容单向下载到本地同名相对路径，
 包括双臂控制 JSONL 日志及两个工作空间的构建、调试和验证日志。
