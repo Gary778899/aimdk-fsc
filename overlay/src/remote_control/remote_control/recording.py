@@ -140,7 +140,8 @@ def summarize(path):
     # 跨过缺失值比较已知源时间，缺失计数仍以原始帧为准。
     known_sources = [frame.source_time_ns for frame in frames if frame.source_time_ns is not None]
     pairs = list(zip(known_sources, known_sources[1:]))
-    seq_pairs = [(a['callback_seq'], b['callback_seq']) for a, b in zip(callbacks, callbacks[1:])]
+    seq_pairs = [(a['callback_seq'], b['callback_seq']) for a, b in zip(callbacks, callbacks[1:])
+                 if a.get('sdk_connection_id') == b.get('sdk_connection_id')]
     callback_errors = [event for event in callbacks if event.get('error')]
     reversed_source = sum(b < a for a, b in pairs)
     input_sequence_errors = sum(b.seq <= a.seq for a, b in zip(frames, frames[1:]))

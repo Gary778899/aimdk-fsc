@@ -12,6 +12,7 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include <rclcpp/serialization.hpp>
 #include <zmq.hpp>
@@ -165,17 +166,19 @@ DataCollectionNode::~DataCollectionNode()
   }
 }
 
-/** @brief 保存标准传感器源时间；图像附带编码与分辨率，异常锁存到当前会话。 */
+/** @brief 转交完整消息，按类型保存源时间和图像属性，异常锁存到当前会话。 */
 template<typename MessageT>
 void DataCollectionNode::on_sensor(const Json & stream, std::shared_ptr<MessageT> message)
 {
   const auto context = receive_context();
   if (!context.active) {return;}
   try {
-    const auto & stamp = message->header.stamp;
-    Json description{{"source_stamp_ns", static_cast<int64_t>(stamp.sec) * 1000000000LL + stamp.nanosec},
-      {"frame_id", message->header.frame_id},
-      {"receive_monotonic_ns", context.monotonic_ns}};
+    Json description{{"receive_monotonic_ns", context.monotonic_ns}};
+    if constexpr (!std::is_same_v<MessageT, std_msgs::msg::String>) {
+      const auto & stamp = message->header.stamp;
+      description["source_stamp_ns"] = static_cast<int64_t>(stamp.sec) * 1000000000LL + stamp.nanosec;
+      description["frame_id"] = message->header.frame_id;
+    }
     if constexpr (std::is_same_v<MessageT, aimdk_msgs::msg::JointStateArray> ||
       std::is_same_v<MessageT, aimdk_msgs::msg::HandStateArray> ||
       std::is_same_v<MessageT, aimdk_msgs::msg::JointCommandArray> ||
@@ -264,6 +267,12 @@ void DataCollectionNode::create_inputs()
           on_sensor(stream, std::move(message));
         };
       subscriptions_.push_back(create_subscription<aimdk_msgs::msg::HandCommandArray>(topic, qos, callback));
+    } else if (type == "std_msgs/msg/String") {
+      /** @brief 转交原始 XR 事件信封，由读回工具解析载荷和 SDK 时间。 */
+      const auto callback = [this, stream](std_msgs::msg::String::SharedPtr message) {
+          on_sensor(stream, std::move(message));
+        };
+      subscriptions_.push_back(create_subscription<std_msgs::msg::String>(topic, qos, callback));
     } else {
       throw std::invalid_argument("No input adapter for message_type: " + type);
     }

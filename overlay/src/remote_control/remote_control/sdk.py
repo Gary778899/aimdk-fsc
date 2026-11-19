@@ -8,6 +8,7 @@ from pathlib import Path
 import queue
 import threading
 import time
+from uuid import uuid4
 
 
 SERVER_CONNECT = 1 << 2
@@ -36,7 +37,7 @@ SDK_CALLBACK = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int,
 
 @dataclass(frozen=True)
 class SDKEvent:
-    """在回调内复制的原始事件；序号属于本次SDK连接，时间使用本机单调秒。"""
+    """保存回调事件、连接内序号及本机时间；纳秒字段取入口，旧秒字段取锁内时刻。"""
 
     callback_seq: int
     received_monotonic_s: float
@@ -46,6 +47,9 @@ class SDKEvent:
     device_id: str
     payload_base64: str
     error: str | None = None
+    sdk_connection_id: str | None = None
+    received_system_time_ns: int | None = None
+    received_monotonic_ns: int | None = None
 
     def to_dict(self):
         """返回可直接写入JSONL的原始事件字段。"""
@@ -53,7 +57,7 @@ class SDKEvent:
 
     @classmethod
     def from_dict(cls, value):
-        """从日志重建原始事件；缺失或额外字段按构造异常报告。"""
+        """从日志重建原始事件；旧日志的新字段默认空，缺少必需字段或字段未知时报错。"""
         return cls(**value)
 
     def payload(self):
@@ -87,14 +91,17 @@ class SDKSource:
         self.events = queue.Queue()
         self._lock = threading.Lock()
         self._sequence = 0
+        self._connection_id = None
         self._error = None
         self._library = None
         self._started = False
         self._callback = SDK_CALLBACK(self._receive)
 
     def _receive(self, context, callback_type, status, user_data):
-        """复制回调生命周期内的数据并入队；异常锁存为事件，不向C调用栈抛出。"""
+        """记录回调入口时钟，在锁内按既有时间语义复制入队；异常锁存为事件。"""
         del context
+        received_monotonic_ns = time.monotonic_ns()
+        received_system_time_ns = time.time_ns()
         with self._lock:
             self._sequence += 1
             received = time.monotonic()
@@ -117,7 +124,10 @@ class SDKSource:
                     self._error = error
             event = SDKEvent(self._sequence, received,
                              EVENT_NAMES.get(callback_type, 'unknown'), callback_type,
-                             status, device_id, base64.b64encode(payload).decode('ascii'), error)
+                             status, device_id, base64.b64encode(payload).decode('ascii'), error,
+                             sdk_connection_id=self._connection_id,
+                             received_system_time_ns=received_system_time_ns,
+                             received_monotonic_ns=received_monotonic_ns)
             self.events.put(event)
 
     def start(self):
@@ -132,6 +142,10 @@ class SDKSource:
             self._library.PXREAInit.restype = ctypes.c_int
             self._library.PXREADeinit.argtypes = []
             self._library.PXREADeinit.restype = ctypes.c_int
+            with self._lock:
+                self._connection_id = uuid4().hex
+                self._sequence = 0
+                self._error = None
             result = self._library.PXREAInit(None, self._callback, CALLBACK_MASK)
             if result != 0:
                 cleanup = self._library.PXREADeinit()

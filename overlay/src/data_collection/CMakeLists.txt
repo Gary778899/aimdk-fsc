@@ -8,6 +8,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(rmw REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(aimdk_msgs REQUIRED)
@@ -81,7 +82,7 @@ target_link_libraries(data_collection_node
   PkgConfig::ZeroMQ Threads::Threads nlohmann_json::nlohmann_json
 )
 ament_target_dependencies(data_collection_node
-  rclcpp sensor_msgs rmw builtin_interfaces aimdk_msgs rosbag2_cpp rosbag2_storage mcap_vendor
+  rclcpp sensor_msgs std_msgs rmw builtin_interfaces aimdk_msgs rosbag2_cpp rosbag2_storage mcap_vendor
 )
 
 install(TARGETS data_collection_node DESTINATION lib/${PROJECT_NAME})

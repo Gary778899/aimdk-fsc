@@ -259,6 +259,16 @@
         "durability": "volatile",
         "depth": 5
       }
+    },
+    {
+      "id": "xr_raw",
+      "topic": "/remote_control/xr/raw",
+      "message_type": "std_msgs/msg/String",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 10
+      }
     }
   ]
 }

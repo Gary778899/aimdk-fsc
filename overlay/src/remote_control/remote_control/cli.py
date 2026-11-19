@@ -17,20 +17,23 @@ from .sdk import SDKSource
 class Recorder:
     """将固定设备的原始回调和完整帧写入同一日志，其他设备只保留原始事件。"""
 
-    def __init__(self, log, device_id, config):
-        """保存日志、显式设备标识及输入约定；不自动选择首台头显。"""
+    def __init__(self, log, device_id, config, on_raw=None):
+        """保存日志、目标设备及输入约定；on_raw接收每条原始事件及drained标记。"""
         if not device_id:
             raise ValueError('device_id须为非空字符串')
         self.log, self.device_id, self.config = log, device_id, config
+        self.on_raw = on_raw
         self.frame_count = 0
 
     def consume(self, event, backlog, drained=False):
-        """先记录原始事件，再归一化所选设备帧；错误保留日志并向调用方传播。
+        """记录原始事件并通知on_raw，再归一化所选设备帧；解析错误向调用方传播。
 
         返回已归一化XRFrame，无输入时返回None；drained表示SDK终止后的退出排空，
         只保存原始事件，避免把主动关闭当作输入失联。
         """
         self.log.record('sdk_event', raw=event.to_dict(), backlog=backlog, drained=drained)
+        if self.on_raw is not None:
+            self.on_raw(event, drained)
         if drained:
             return
         if event.error:
@@ -38,6 +41,7 @@ class Recorder:
         if event.kind == 'server_disconnected' or (
                 event.kind == 'device_missing' and event.device_id == self.device_id):
             self.log.record('session_invalidated', callback_seq=event.callback_seq,
+                            sdk_connection_id=event.sdk_connection_id,
                             received_monotonic_s=event.received_monotonic_s,
                             reason=event.kind, device_id=self.device_id)
             return
@@ -45,7 +49,8 @@ class Recorder:
             return
         frame = parse_tracking(event, self.frame_count + 1, self.config)
         if frame is not None:
-            self.log.record('xr_frame', frame=frame.to_dict(), callback_seq=event.callback_seq)
+            self.log.record('xr_frame', frame=frame.to_dict(), callback_seq=event.callback_seq,
+                            sdk_connection_id=event.sdk_connection_id)
             self.frame_count += 1
         return frame
 

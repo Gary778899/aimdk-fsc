@@ -4,6 +4,7 @@ import argparse
 from dataclasses import asdict
 import hashlib
 from itertools import chain
+import json
 import math
 import sys
 import time
@@ -28,6 +29,38 @@ from .upper_body_teleop_replay import replay_frames
 from .upper_body_teleop_tools import MappingDisplay, live_result_timing
 
 
+class XRRawPublisher:
+    """发布供MCAP录制的原始SDK事件，独立统计发布调用错误。"""
+
+    def __init__(self, node, session_id):
+        """为当前node创建XR记录话题；session_id为可选会话编号，创建失败向调用方报告。"""
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        from std_msgs.msg import String
+
+        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT,
+                         durability=DurabilityPolicy.VOLATILE)
+        self.publisher = node.create_publisher(String, '/remote_control/xr/raw', qos)
+        self.message_type, self.session_id = String, session_id
+        self.attempted = self.publish_calls_returned = 0
+        self.first_error = None
+
+    def __call__(self, event, drained):
+        """发布单条SDKEvent；drained标明关闭后排空，记录异常供会话结束时核对。"""
+        self.attempted += 1
+        try:
+            message = self.message_type(data=json.dumps(dict(
+                schema='remote_control.xr_raw.v1', session_id=self.session_id,
+                drained=drained, **event.to_dict()), ensure_ascii=False, allow_nan=False))
+            self.publisher.publish(message)
+        except Exception as error:
+            if self.first_error is None:
+                self.first_error = dict(sdk_connection_id=event.sdk_connection_id,
+                                        callback_seq=event.callback_seq,
+                                        message=f'{type(error).__name__}: {error}')
+        else:
+            self.publish_calls_returned += 1
+
+
 def parser():
     """定义实际输入及只读观测参数；默认等待新输入，时限仅供显式观测实验。"""
     result = argparse.ArgumentParser(description=__doc__)
@@ -37,6 +70,8 @@ def parser():
     result.add_argument('--sdk-library', help='显式libPXREARobotSDK.so路径')
     result.add_argument('--xr-output', required=True, help='原始XR及完整帧JSONL路径；重名时自动添加编号')
     result.add_argument('--log-dir', help='IK与反馈日志目录，默认工作区log')
+    result.add_argument('--publish-xr-raw', action='store_true', help='发布原始SDK事件供MCAP采集')
+    result.add_argument('--session-id', help='写入XR和控制日志的采集会话编号')
     result.add_argument('--load-description', required=True, help='实际姿态、工具和负载说明')
     result.add_argument('--input-timeout', type=float,
                         help='输入时限秒数；只读默认不设，execute默认0.5，首次Grip前持续等待')
@@ -118,7 +153,7 @@ def live_frames(receiver, port, options):
 def main(args=None):
     """连续记录XR并选择最新位姿求解；显式执行，返回0完成、1失败或130中断。"""
     options = parser().parse_args(args)
-    source = recorder = xr_log = diagnostics = port = node = client = receiver = None
+    source = recorder = xr_log = diagnostics = port = node = client = receiver = raw_publisher = None
     initialized = False
     reason, result = 'failed', 1
     try:
@@ -143,7 +178,7 @@ def main(args=None):
         source = SDKSource(options.sdk_library)
         diagnostics = UpperBodyLog(
             log_directory(options.log_dir), command='upper_body_teleop_observe',
-            options=vars(options), code_sha256=code_manifest(),
+            session_id=options.session_id, options=vars(options), code_sha256=code_manifest(),
             mapping_config=asdict(mapping_config), input_config=asdict(input_config),
             execute=options.execute, compensation_enabled=options.compensation,
             reference_policy=('mc_command_first_grip_then_published_ideal'
@@ -154,12 +189,12 @@ def main(args=None):
             ik_recovery_duration_s=options.ik_recovery_duration)
         xr_log = XRLog(
             options.xr_output, unique_path=True,
-            device_id=options.device_id, input_config=asdict(input_config),
+            session_id=options.session_id, device_id=options.device_id,
+            input_config=asdict(input_config), publish_xr_raw=options.publish_xr_raw,
             sdk_library=str(source.library_path),
             sdk_sha256=hashlib.sha256(source.library_path.read_bytes()).hexdigest(),
             snapshot_api='PXREAInit/ctypes', python=sys.version,
             ik_log=str(diagnostics.path))
-        recorder = Recorder(xr_log, options.device_id, input_config)
         import rclpy
         from rclpy.signals import SignalHandlerOptions
 
@@ -168,6 +203,14 @@ def main(args=None):
         node = rclpy.create_node('upper_body_teleop_observe')
         if node.get_parameter('use_sim_time').value:
             raise ValueError('实际反馈观测不支持use_sim_time')
+        if options.publish_xr_raw:
+            try:
+                raw_publisher = XRRawPublisher(node, options.session_id)
+            except Exception as error:
+                xr_log.record('xr_raw_publish_error', stage='create_publisher',
+                              error_type=type(error).__name__, message=str(error))
+                print(f'XR原始话题创建失败：{error}', file=sys.stderr)
+        recorder = Recorder(xr_log, options.device_id, input_config, on_raw=raw_publisher)
         port_class = UpperBodyTeleopExecutor if options.execute else UpperBodyExecutor
         port = port_class(rclpy, node, options, diagnostics)
         if options.execute:
@@ -360,7 +403,14 @@ def main(args=None):
             finally:
                 try:
                     if xr_log is not None:
-                        xr_log.close(reason)
+                        try:
+                            if raw_publisher is not None:
+                                xr_log.record(
+                                    'xr_raw_publish_summary', attempted=raw_publisher.attempted,
+                                    publish_calls_returned=raw_publisher.publish_calls_returned,
+                                    first_error=raw_publisher.first_error)
+                        finally:
+                            xr_log.close(reason)
                 finally:
                     if diagnostics is not None:
                         diagnostics.close(reason)

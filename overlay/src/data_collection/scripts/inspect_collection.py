@@ -2,11 +2,21 @@
 """检查 MCAP 会话摘要，可选在 ROS 环境读回消息；兼容历史 JSONL 会话。"""
 
 import argparse
-from collections import Counter
+import base64
+from collections import Counter, defaultdict
+import hashlib
 import json
 import math
 from pathlib import Path
 import sys
+
+
+XR_TOPIC = "/remote_control/xr/raw"
+XR_SCHEMA = "remote_control.xr_raw.v1"
+XR_EVENT_FIELDS = (
+    "sdk_connection_id", "callback_seq", "received_system_time_ns", "received_monotonic_ns",
+    "received_monotonic_s", "kind", "callback_type", "status", "device_id", "payload_base64", "error",
+)
 
 
 def require(condition, message):
@@ -357,8 +367,175 @@ def inspect_mcap_summary(directory, session):
                 raw_mcap_verified=False, last_error=session["last_error"])
 
 
-def verify_mcap(directory):
-    """在 Humble 环境逐条读回 MCAP 并反序列化，核对类型、写入数及图像结构；失败抛异常。"""
+def validate_xr_event(event):
+    """校验原始 XR 消息信封与时间字段，返回事件；载荷内容在读回阶段统计。"""
+    require(isinstance(event, dict) and event.get("schema") == XR_SCHEMA, "XR 原始事件格式不受支持")
+    require(isinstance(event["sdk_connection_id"], str) and event["sdk_connection_id"], "XR 缺少 SDK 连接标识")
+    require(integer(event["callback_seq"], "XR callback_seq") > 0, "XR callback_seq 必须为正")
+    require(type(event["drained"]) is bool, "XR drained 必须为布尔值")
+    for field in ("received_system_time_ns", "received_monotonic_ns", "callback_type", "status"):
+        integer(event[field], f"XR {field}")
+    number(event["received_monotonic_s"], "XR received_monotonic_s", nullable=False)
+    for field in ("kind", "device_id", "payload_base64"):
+        require(isinstance(event[field], str), f"XR {field} 必须为字符串")
+    for field, value in (("error", event["error"]), ("session_id", event.get("session_id"))):
+        require(value is None or isinstance(value, str), f"XR {field} 必须为字符串或 null")
+    return event
+
+
+def parse_xr_event(text):
+    """从 String 话题的 JSON 文本读取原始 XR 信封；格式错误抛出 ValueError 或 KeyError。"""
+    return validate_xr_event(parse_json(text))
+
+
+def xr_event_digest(event):
+    """返回包含载荷、时间、排空阶段和会话标识的事件摘要，用于比较 MCAP 与 XR JSONL。"""
+    values = [event[field] for field in (*XR_EVENT_FIELDS, "drained")] + [event.get("session_id")]
+    return hashlib.sha256(json.dumps(values, ensure_ascii=True).encode("ascii")).digest()
+
+
+def read_xr_reference(path):
+    """读取同次 XR JSONL 的元数据及按连接和序号索引的事件摘要；损坏数据带行号报错。"""
+    metadata, reference = None, {}
+    with path.open(encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            try:
+                row = parse_json(line)
+                require(isinstance(row, dict) and row.get("schema") == "remote_control.xr.v1",
+                        "XR JSONL 格式不受支持")
+                if line_number == 1:
+                    require(row["event"] == "metadata", "XR JSONL 首行必须是元数据")
+                    metadata = row["fields"]
+                    require(isinstance(metadata, dict), "XR JSONL 元数据必须为对象")
+                if row["event"] != "sdk_event":
+                    continue
+                fields = row["fields"]
+                event = validate_xr_event(dict(fields["raw"], schema=XR_SCHEMA, drained=fields["drained"],
+                                               session_id=metadata.get("session_id")))
+                key = (event["sdk_connection_id"], event["callback_seq"])
+                require(key not in reference, "XR JSONL 存在重复事件标识")
+                reference[key] = xr_event_digest(event)
+            except (ValueError, KeyError, TypeError) as error:
+                raise ValueError(f"{path}:{line_number}: {error}") from error
+    require(isinstance(metadata, dict), f"{path}: 缺少 XR JSONL 元数据")
+    return metadata, reference
+
+
+class XrReadback:
+    """核对原始 XR 信封和事件覆盖，对指定设备按原输入协议验证双手帧。"""
+
+    def __init__(self, device_id, reference_path, input_config_path):
+        """读取可选对账日志和输入协议，显式设备或配置与同次日志冲突时抛出 ValueError。"""
+        metadata, self.reference = ({}, None) if reference_path is None else read_xr_reference(reference_path)
+        logged_device = metadata.get("device_id")
+        require(device_id is None or logged_device in (None, device_id), "指定的 XR 设备与 JSONL 元数据不一致")
+        self.device_id = device_id or logged_device
+        configuration = metadata.get("input_config")
+        if input_config_path is not None:
+            require(self.device_id, "使用 XR 输入配置时须指定设备或提供含设备标识的 XR JSONL")
+            explicit = parse_json(input_config_path.read_text(encoding="utf-8"))
+            require(configuration is None or configuration == explicit, "XR 输入配置与 JSONL 元数据不一致")
+            configuration = explicit
+        self.config = None
+        if configuration is not None and self.device_id:
+            from remote_control.protocol import InputConfig
+
+            self.config = InputConfig.from_dict(configuration)
+        self.counts = Counter()
+        self.kinds = Counter()
+        self.sequences = defaultdict(Counter)
+        self.devices = defaultdict(Counter)
+        self.digests = {}
+
+    def observe(self, text):
+        """检查一条 MCAP XR 消息，累计事件覆盖、载荷可解码性与设备帧计数。"""
+        event = parse_xr_event(text)
+        connection, seq = event["sdk_connection_id"], event["callback_seq"]
+        self.sequences[connection][seq] += 1
+        if self.reference is not None:
+            self.digests[connection, seq] = xr_event_digest(event)
+        drained = event["drained"]
+        kind = event["kind"]
+        self.kinds[kind] += 1
+        self.counts["events"] += 1
+        self.counts["drained_events"] += drained
+        self.counts["callback_errors"] += event["error"] is not None
+        if kind in ("server_disconnected", "device_missing") and not drained:
+            self.counts["active_disconnect_events"] += (kind == "server_disconnected"
+                                                         or event["device_id"] == self.device_id)
+        try:
+            raw = base64.b64decode(event["payload_base64"], validate=True)
+        except ValueError:
+            self.counts["invalid_base64"] += 1
+            return
+        if kind == "device_state":
+            self.observe_tracking(event, raw)
+
+    def observe_tracking(self, event, raw):
+        """统计 Tracking 和结构双手帧，对目标设备复用 SDK 解析器核对完整帧。"""
+        counts = self.devices[event["device_id"]]
+        try:
+            outer = parse_json(raw.decode("utf-8"))
+            require(isinstance(outer, dict), "设备状态须为对象")
+            if outer.get("functionName", outer.get("function")) != "Tracking":
+                return
+            counts["tracking_callbacks"] += 1
+            if event["drained"]:
+                return
+            counts["active_tracking_callbacks"] += 1
+            value = outer["value"]
+            if isinstance(value, str):
+                value = parse_json(value)
+            require(isinstance(value, dict), "Tracking.value 须为对象")
+            controllers = value.get("Controller", {})
+            if isinstance(controllers, dict) and all(
+                    isinstance(controllers.get(side), dict) for side in ("left", "right")):
+                counts["active_dual_hand_fields"] += 1
+            if self.config is not None and event["device_id"] == self.device_id:
+                from remote_control.protocol import parse_tracking
+                from remote_control.sdk import SDKEvent
+
+                sdk_event = SDKEvent.from_dict({field: event[field] for field in XR_EVENT_FIELDS})
+                frame = parse_tracking(sdk_event, event["callback_seq"], self.config)
+                counts["active_complete_dual_hand_frames"] += frame is not None
+        except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
+            counts["invalid_payloads"] += 1
+
+    def report(self):
+        """返回按连接、设备和 JSONL 对账的报告，区分信封读回与目标设备可用性。"""
+        connections = {}
+        for connection, sequences in self.sequences.items():
+            first, last = min(sequences), max(sequences)
+            connections[connection] = dict(first_callback_seq=first, last_callback_seq=last,
+                                           internal_missing=last - first + 1 - len(sequences),
+                                           duplicates=sum(sequences.values()) - len(sequences))
+        target = self.devices.get(self.device_id, {})
+        tracking = target.get("active_tracking_callbacks", 0) if self.device_id else None
+        hands = target.get("active_dual_hand_fields", 0) if self.device_id else None
+        complete = target.get("active_complete_dual_hand_frames", 0) if self.config else None
+        comparable = None
+        if self.reference is not None:
+            missing = self.reference.keys() - self.digests.keys()
+            extra = self.digests.keys() - self.reference.keys()
+            changed = {key for key in self.digests.keys() & self.reference.keys()
+                       if self.digests[key] != self.reference[key]}
+            comparable = dict(reference_events=len(self.reference), missing_from_mcap=len(missing),
+                              extra_in_mcap=len(extra), content_mismatches=len(changed),
+                              missing_examples=sorted(missing)[:10], extra_examples=sorted(extra)[:10],
+                              mismatch_examples=sorted(changed)[:10], matches=not (missing or extra or changed))
+        quality_ok = (self.counts["invalid_base64"] == 0 and
+                      all(row["internal_missing"] == row["duplicates"] == 0 for row in connections.values()) and
+                      (comparable is None or comparable["matches"]) and
+                      (hands is None or hands > 0) and (complete is None or complete > 0))
+        return dict(counts=dict(self.counts), kinds=dict(self.kinds), connections=connections,
+                    devices={device: dict(counts) for device, counts in self.devices.items()},
+                    target_device_id=self.device_id, target_tracking_callbacks=tracking,
+                    target_dual_hand_fields=hands, target_complete_dual_hand_frames=complete,
+                    jsonl_comparison=comparable, quality_ok=quality_ok)
+
+
+def verify_mcap(directory, xr_device_id=None, xr_jsonl=None, xr_input_config=None):
+    """在 Humble 环境读回 MCAP，核对类型、条数、图像结构及所选 XR；读取损坏时抛异常。"""
     import rosbag2_py
     from rclpy.serialization import deserialize_message
     from rosidl_runtime_py.utilities import get_message
@@ -369,7 +546,12 @@ def verify_mcap(directory):
     reader = rosbag2_py.SequentialReader()
     reader.open(rosbag2_py.StorageOptions(uri=str(directory / "raw"), storage_id="mcap"),
                 rosbag2_py.ConverterOptions("cdr", "cdr"))
-    expected = {entry["topic"]: entry["message_type"] for entry in session["mapping"]["streams"]}
+    streams = session["mapping"]["streams"]
+    expected = {entry["topic"]: entry["message_type"] for entry in streams}
+    xr_topic = next((entry["topic"] for entry in streams if entry["id"] == "xr_raw"), None)
+    require(xr_topic is not None or not (xr_device_id or xr_jsonl or xr_input_config), "会话未选择 xr_raw")
+    require(xr_topic is None or expected[xr_topic] == "std_msgs/msg/String", "xr_raw 必须使用 std_msgs/msg/String")
+    xr = None if xr_topic is None else XrReadback(xr_device_id, xr_jsonl, xr_input_config)
     actual = {entry.name: entry.type for entry in reader.get_all_topics_and_types()}
     require(actual == expected, "MCAP 话题或消息类型与会话配置不一致")
     classes = {topic: get_message(kind) for topic, kind in actual.items()}
@@ -379,6 +561,8 @@ def verify_mcap(directory):
         topic, payload, received_ns = reader.read_next()
         message = deserialize_message(payload, classes[topic])
         counts[topic] += 1
+        if topic == xr_topic:
+            xr.observe(message.data)
         if hasattr(message, "header"):
             stamp = message.header.stamp
             source_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
@@ -398,7 +582,10 @@ def verify_mcap(directory):
             stamps[topic].update(width=message.width, height=message.height, encoding=message.encoding)
     for topic in expected:
         require(counts[topic] == session["raw"][topic]["written"], f"{topic} MCAP 条数与摘要不一致")
-    return dict(verified=True, counts={topic: counts[topic] for topic in expected}, sources=stamps)
+    report = dict(verified=True, counts={topic: counts[topic] for topic in expected}, sources=stamps)
+    if xr is not None:
+        report["xr_raw"] = xr.report()
+    return report
 
 
 def main():
@@ -406,14 +593,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("session_dir", type=Path, help="包含 session.json 的会话目录")
     parser.add_argument("--verify-mcap", action="store_true", help="在机器人 ROS 环境实际读回并反序列化 MCAP")
+    parser.add_argument("--xr-device-id", help="核对指定设备在录制期的 Tracking；默认使用 XR JSONL 元数据")
+    parser.add_argument("--xr-jsonl", type=Path, help="对账同次遥操的 XR JSONL，并复用其中的输入协议")
+    parser.add_argument("--xr-input-config", type=Path, help="验证完整双手帧所用的 XR 输入协议 JSON")
     options = parser.parse_args()
+    if not options.verify_mcap and (options.xr_device_id or options.xr_jsonl or options.xr_input_config):
+        parser.error("XR 选项需要 --verify-mcap")
     try:
         report = inspect_session(options.session_dir)
         if options.verify_mcap:
-            report["mcap_readback"] = verify_mcap(options.session_dir)
+            report["mcap_readback"] = verify_mcap(options.session_dir, options.xr_device_id,
+                                                 options.xr_jsonl, options.xr_input_config)
             report["raw_mcap_verified"] = True
         print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
-        return 0 if report["data_complete"] else 1
+        xr = report.get("mcap_readback", {}).get("xr_raw")
+        return 0 if report["data_complete"] and (xr is None or xr["quality_ok"]) else 1
     except (OSError, ValueError, KeyError, TypeError, OverflowError, ImportError, RuntimeError) as error:
         print(json.dumps({"structure_valid": False, "error": str(error)}, ensure_ascii=False))
         return 2
