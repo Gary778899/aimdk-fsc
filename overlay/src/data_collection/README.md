@@ -1,6 +1,6 @@
 # data_collection 使用说明
 
-版本 `0.3.0`，适用于机器人 Ubuntu 22.04／ROS 2 Humble、AimDK 1.1 和 X2 Ultra。双臂／夹爪静态录制及 MCAP 读回已验证；full 多模态接入已读回，但存在队列丢弃。新增全身关节来源、骨盆 IMU 与在线耗时统计待机器人容器验证。
+版本 `0.3.0`，适用于机器人 Ubuntu 22.04／ROS 2 Humble、AimDK 1.1 和 X2 Ultra。双臂／夹爪静态录制及 MCAP 读回已验证；full 多模态接入已读回，但存在队列丢弃。新增全身关节反馈与指令来源、骨盆 IMU 及在线耗时统计待机器人容器验证。
 
 ## 功能与数据范围
 
@@ -16,11 +16,22 @@
 | `waist` | `/aima/hal/joint/waist/state` | `aimdk_msgs/msg/JointStateArray` |
 | `legs` | `/aima/hal/joint/leg/state` | `aimdk_msgs/msg/JointStateArray` |
 | `arm_commands` | `/aima/hal/joint/arm/command` | `aimdk_msgs/msg/JointCommandArray` |
+| `head_commands` | `/aima/hal/joint/head/command` | `aimdk_msgs/msg/JointCommandArray` |
+| `waist_commands` | `/aima/hal/joint/waist/command` | `aimdk_msgs/msg/JointCommandArray` |
+| `leg_commands` | `/aima/hal/joint/leg/command` | `aimdk_msgs/msg/JointCommandArray` |
+| `hand_commands` | `/aima/hal/joint/hand/command` | `aimdk_msgs/msg/HandCommandArray` |
 | `imu_chest` | `/aima/hal/imu/chest/state` | `sensor_msgs/msg/Imu` |
 | `imu_pelvis` | `/aima/hal/imu/torso/state` | `sensor_msgs/msg/Imu` |
 | `head_rgb`、`head_depth` | `/aima/hal/sensor/rgbd_head_front/rgb_image`、`depth_image` | `sensor_msgs/msg/Image` |
 | `wrist_left_rgb`、`wrist_left_depth` | `/wrist/left/color/image_rect_raw`、`/wrist/left/depth/image_rect_raw` | `sensor_msgs/msg/Image` |
 | `wrist_right_rgb`、`wrist_right_depth` | `/wrist/right/color/image_rect_raw`、`/wrist/right/depth/image_rect_raw` | `sensor_msgs/msg/Image` |
+
+头部、手臂、腰部和双腿指令沿用 SDK [motocontrol 示例](../../../underlay/src/py_examples/py_examples/motocontrol.py)，
+保存完整 `JointCommandArray`，包含各关节的名称、position、velocity、effort、stiffness 和 damping。
+夹爪指令依据 SDK [hand_control 示例](../../../underlay/src/py_examples/py_examples/hand_control.py)及
+[HandCommandArray](../../../underlay/src/aimdk_msgs/interface/robot/hal/msg/HandCommandArray.msg)，
+保留左右夹爪类型及各自指令数组中的全部字段。所有指令来源的 QoS 为 best_effort／volatile、depth=100，
+保留 `header.stamp`、`meas_stamp` 和 `sequence`，复用现有原始消息写入与收尾计数。
 
 骨盆 IMU 沿用现有[上肢反馈订阅](../functions/aimdk_functions/upper_body_ros.py)中的话题映射：
 SDK 将 `/aima/hal/imu/torso/state` 标注为腰部 IMU，项目将其作为 pelvis IMU 使用，
@@ -89,15 +100,16 @@ source /home/agi/aimdk-fsc/install/local_setup.bash
 
 数据根目录使用 `/home/agi/aimdk-fsc/data`，由项目目录挂载持久化并受同步 `/data/` 排除规则保护。远程清理任务仍会按其既有规则清除此目录。
 
-默认只采双臂和夹爪，使用 `profile` 选择 [collection_profiles.json](config/collection_profiles.json) 中的组合：
+默认采集双臂、夹爪反馈及胸部、骨盆 IMU，使用 `profile` 选择 [collection_profiles.json](config/collection_profiles.json) 中的组合：
 
 | 预设 | 内容 |
 | --- | --- |
-| `upper_body`（默认） | 双臂、夹爪反馈 |
+| `upper_body`（默认） | 双臂、夹爪反馈及胸部、骨盆 IMU；共 4 个话题 |
 | `whole_body_imu` | 头部、双臂、腰部、双腿、夹爪反馈，以及胸部、骨盆 IMU；共 7 个话题 |
+| `whole_body_commands` | 头部、双臂、腰部、双腿及夹爪的 HAL 指令；共 5 个话题 |
 | `manipulation` | 双臂、夹爪、HAL 手臂指令、头部 RGBD、双腕 RGB |
 | `camera_check` | 头部 RGBD、双腕 RGB |
-| `full` | 全部关节反馈、HAL 手臂指令、胸部及骨盆 IMU、头部与双腕 RGBD，以及图像内参 |
+| `full` | 全部关节反馈、全部五路 HAL 关节及夹爪指令、胸部及骨盆 IMU、头部与双腕 RGBD，以及图像内参 |
 
 ```bash
 ros2 launch data_collection data_collection.launch.py \
@@ -114,6 +126,16 @@ ros2 launch data_collection data_collection.launch.py \
 该预设不创建相机订阅或启动腕部驱动，按原频率保存七路反馈。录制前同步并重新构建 `data_collection`，加载 overlay 环境，再沿用 START／STATUS／STOP。头部、腰部和双腿仍需核对真机实际发布者与完整关节名称；按原始消息保留全部关节，不硬编码数量或数组槽位。所选来源未收到消息时按既有规则报告缺流，不自动跳过。
 
 无图像会显著降低输入负载，零丢弃仍以本轮 STATUS、收尾计数和 MCAP 读回为依据。STOP 后核对七路均有数据、submitted=written、dropped=0、队列排空，并核对原始关节名称、状态／故障、源时间和 IMU 字段。完整性标记的含义见下文会话状态说明。
+
+仅录全身关节及夹爪指令时使用：
+
+```bash
+ros2 launch data_collection data_collection.launch.py \
+  data_root:=/home/agi/aimdk-fsc/data profile:=whole_body_commands
+```
+
+该预设只读订阅五路 command。单独或组合采集时，用 `streams` 指定上表中的来源 ID，
+例如 `streams:=head_joints,head_commands` 同时采集头部反馈与指令。
 
 仅录骨盆 IMU 时使用：
 
@@ -231,10 +253,11 @@ python3 src/data_collection/scripts/benchmark_collection_io.py \
 ## 容器验收
 
 1. 使用 whole_body_imu：确认七个预期话题均有数据，包含 `/aima/hal/imu/chest/state` 和 `/aima/hal/imu/torso/state`，头部／腰部／双腿关节完整名称可读回，反馈／IMU 数值与原始状态保留，逐话题无丢弃且正常收尾。
-2. 默认预设录制：确认仅双臂／夹爪两个话题，原始关节名称、错误及时间字段读回一致，新目录不生成 frames.jsonl。
+2. 默认预设录制：确认双臂、夹爪反馈及胸部、骨盆 IMU 四个话题均有数据，原始关节名称、错误、IMU 及时间字段读回一致，新目录不生成 frames.jsonl。
 3. 单独选择 `wrist_left_rgb`：确认仅左腕彩色流及内参写入，右腕不由本入口启动，独立相机会话能正常 STOP 和读回。
 4. 使用 `manipulation`，再复用已启动驱动：确认头部 RGBD、双腕 RGB、反馈及指令逐话题有数据，内参存在；抽查图像与深度编码及标定内容。
 5. 全量短录制：记录时长、MCAP 体积、实际接收频率、队列峰值、丢弃和 Jetson 负载；检查深度原始数值与容器压缩配置。
-6. 重复 START、重复 STOP 及连续两次会话：确认幂等、收尾计数守恒、队列清空且消息不跨会话。已选来源不发布时如实报告无数据。
+6. 使用 `whole_body_commands`：确认五路指令的话题与类型匹配；STOP 后读回 MCAP，核对关节名称、完整指令字段、夹爪类型与左右数组，以及源时间／测量时间／序号；逐话题 submitted=written、dropped=0。真机未发布的来源须显示缺流，不作为采集完成。
+7. 重复 START、重复 STOP 及连续两次会话：确认幂等、收尾计数守恒、队列清空且消息不跨会话。已选来源不发布时如实报告无数据。
 
 C++ 节点、MCAP 写入和 ROS 启动均由用户同步后在机器人容器构建、运行与验证。本地旧 JSONL 验证结果不代表本版多模态验收通过。

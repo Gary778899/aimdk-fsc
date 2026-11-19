@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+#include <aimdk_msgs/msg/hand_command_array.hpp>
 #include <aimdk_msgs/msg/joint_command_array.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
@@ -177,7 +178,8 @@ void DataCollectionNode::on_sensor(const Json & stream, std::shared_ptr<MessageT
       {"receive_monotonic_ns", context.monotonic_ns}};
     if constexpr (std::is_same_v<MessageT, aimdk_msgs::msg::JointStateArray> ||
       std::is_same_v<MessageT, aimdk_msgs::msg::HandStateArray> ||
-      std::is_same_v<MessageT, aimdk_msgs::msg::JointCommandArray>)
+      std::is_same_v<MessageT, aimdk_msgs::msg::JointCommandArray> ||
+      std::is_same_v<MessageT, aimdk_msgs::msg::HandCommandArray>)
     {
       const auto & measured = message->header.meas_stamp;
       description["meas_stamp_ns"] = static_cast<int64_t>(measured.sec) * 1000000000LL + measured.nanosec;
@@ -256,6 +258,12 @@ void DataCollectionNode::create_inputs()
           on_sensor(stream, std::move(message));
         };
       subscriptions_.push_back(create_subscription<aimdk_msgs::msg::JointCommandArray>(topic, qos, callback));
+    } else if (type == "aimdk_msgs/msg/HandCommandArray") {
+      /** @brief 只读转交夹爪类型及左右夹爪完整原始指令。 */
+      const auto callback = [this, stream](aimdk_msgs::msg::HandCommandArray::SharedPtr message) {
+          on_sensor(stream, std::move(message));
+        };
+      subscriptions_.push_back(create_subscription<aimdk_msgs::msg::HandCommandArray>(topic, qos, callback));
     } else {
       throw std::invalid_argument("No input adapter for message_type: " + type);
     }

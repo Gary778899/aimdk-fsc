@@ -63,6 +63,46 @@
       }
     },
     {
+      "id": "head_commands",
+      "topic": "/aima/hal/joint/head/command",
+      "message_type": "aimdk_msgs/msg/JointCommandArray",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 100
+      }
+    },
+    {
+      "id": "waist_commands",
+      "topic": "/aima/hal/joint/waist/command",
+      "message_type": "aimdk_msgs/msg/JointCommandArray",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 100
+      }
+    },
+    {
+      "id": "leg_commands",
+      "topic": "/aima/hal/joint/leg/command",
+      "message_type": "aimdk_msgs/msg/JointCommandArray",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 100
+      }
+    },
+    {
+      "id": "hand_commands",
+      "topic": "/aima/hal/joint/hand/command",
+      "message_type": "aimdk_msgs/msg/HandCommandArray",
+      "qos": {
+        "reliability": "best_effort",
+        "durability": "volatile",
+        "depth": 100
+      }
+    },
+    {
       "id": "imu_chest",
       "topic": "/aima/hal/imu/chest/state",
       "message_type": "sensor_msgs/msg/Imu",

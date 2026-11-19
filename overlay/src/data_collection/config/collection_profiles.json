@@ -1,7 +1,9 @@
 {
   "upper_body": [
     "arms",
-    "hands"
+    "hands",
+    "imu_chest",
+    "imu_pelvis"
   ],
   "whole_body_imu": [
     "head_joints",
@@ -34,6 +36,10 @@
     "waist",
     "legs",
     "arm_commands",
+    "head_commands",
+    "waist_commands",
+    "leg_commands",
+    "hand_commands",
     "imu_chest",
     "imu_pelvis",
     "head_rgb",
@@ -42,5 +48,12 @@
     "wrist_left_depth",
     "wrist_right_rgb",
     "wrist_right_depth"
+  ],
+  "whole_body_commands": [
+    "arm_commands",
+    "head_commands",
+    "waist_commands",
+    "leg_commands",
+    "hand_commands"
   ]
 }
