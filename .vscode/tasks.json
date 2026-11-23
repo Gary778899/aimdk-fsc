@@ -66,6 +66,43 @@
             }
         },
         {
+            "label": "机器人：预览全量清理",
+            "type": "process",
+            "command": "python3",
+            "args": [
+                "${workspaceFolder}/scripts/robot_cleanup.py",
+                "--host",
+                "${input:robotHost}",
+                "--all"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true,
+                "focus": true
+            }
+        },
+        {
+            "label": "机器人：执行全量清理",
+            "type": "process",
+            "command": "python3",
+            "args": [
+                "${workspaceFolder}/scripts/robot_cleanup.py",
+                "--host",
+                "${input:robotHost}",
+                "--all",
+                "--execute"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true,
+                "focus": true
+            }
+        },
+        {
             "label": "机器人：预览同步",
             "type": "process",
             "command": "rsync",
