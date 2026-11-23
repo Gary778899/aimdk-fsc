@@ -49,6 +49,20 @@
     "wrist_right_rgb",
     "wrist_right_depth"
   ],
+  "full-no-cam": [
+    "arms",
+    "hands",
+    "head_joints",
+    "waist",
+    "legs",
+    "arm_commands",
+    "head_commands",
+    "waist_commands",
+    "leg_commands",
+    "hand_commands",
+    "imu_chest",
+    "imu_pelvis"
+  ],
   "whole_body_commands": [
     "arm_commands",
     "head_commands",
