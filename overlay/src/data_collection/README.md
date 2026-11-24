@@ -2,14 +2,197 @@
 
 版本 `0.3.0`，适用于机器人 Ubuntu 22.04／ROS 2 Humble、AimDK 1.1 和 X2 Ultra。双臂／夹爪静态录制及 MCAP 读回已验证；full 多模态接入已读回，但存在队列丢弃。新增全身关节反馈与指令来源、骨盆 IMU 及在线耗时统计待机器人容器验证。
 
+## 常用采集流程
+
+在机器人 Humble 容器的终端 A 和 B 分别加载环境。首次部署或同步代码更新后，先按[同步与构建](#同步与构建)准备对应的包。
+
+```bash
+cd /home/agi/aimdk-fsc
+source /home/agi/aimdk/install/setup.bash
+source /home/agi/aimdk-fsc/install/local_setup.bash
+```
+
+| 目的 | 操作入口 | 主要产物 |
+| --- | --- | --- |
+| 只采机器人数据 | [启动选流](#统一启动与来源选择) → [手动起停和读回](#手动起停与读回) | MCAP、`session.json` |
+| 单独验收 PICO 输入 | [独立 PICO 输入采集](#独立-pico-输入采集) | 原始 XR MCAP、`xr.jsonl`、对账报告，可在无夹爪时使用 |
+| 录制完整的遥操试次 | [单次示教录制与读回](#单次示教录制与读回) | MCAP、XR 与控制日志、实验清单、读回报告 |
+
+### 统一启动与来源选择
+
+终端 A 启动采集器并保持运行。以下为全身反馈和 IMU 的无图像录制。
+
+```bash
+ros2 launch data_collection data_collection.launch.py \
+  data_root:=/home/agi/aimdk-fsc/data profile:=whole_body_imu
+```
+
+用 `profile` 选择预设，或用逗号分隔的 `streams` 覆盖预设。只选预计有数据的来源，任一已选话题零样本都会影响完整性。以下只采双臂反馈与左腕彩色图像，在终端 A 加载 RealSense 环境后启动。 [预设配置](config/collection_profiles.json)
+
+```bash
+source /home/agi/aimdk-fsc/realsense_ws/install/local_setup.bash
+ros2 launch data_collection data_collection.launch.py \
+  data_root:=/home/agi/aimdk-fsc/data streams:=arms,wrist_left_rgb
+```
+
+| `profile` | 采集内容 |
+| --- | --- |
+| `upper_body`（默认） | 双臂、夹爪反馈及胸部、骨盆 IMU |
+| `whole_body_imu` | 头部、双臂、腰、双腿、夹爪反馈及胸部、骨盆 IMU |
+| `whole_body_commands` | 头部、双臂、腰、双腿、夹爪的 HAL 指令 |
+| `manipulation` | 双臂、夹爪反馈、HAL 手臂指令、头部 RGBD、双腕 RGB |
+| `camera_check` | 头部 RGBD、双腕 RGB |
+| `full-no-cam` | 全身关节及夹爪反馈、对应 HAL 指令、胸部和骨盆 IMU |
+| `full` | `full-no-cam` 加头部及双腕 RGBD |
+
+图像自动附带内参。入口默认只启动选中的腕部驱动，已有驱动时加 `start_wrist_cameras:=false`。更换来源时先 STOP，再关闭终端 A 的 launch 并按新参数启动。保持同一选流时可连续录制多次。全部来源 ID 见[功能与数据范围](#功能与数据范围)。
+
+### 手动起停与读回
+
+终端 B 在采集器就绪后开始录制。收到 START 的 `ACK` 后执行本轮实验，其间用 STATUS 查看各来源是否收到数据及队列丢弃数。
+
+```bash
+ros2 run data_collection collection_control START
+ros2 run data_collection collection_control STATUS
+```
+
+结束时先停止录制。
+
+```bash
+ros2 run data_collection collection_control STOP
+```
+
+收到 `ACK` 后，从 STATUS 取实际会话路径并读回。STOP 超时时按[会话控制与状态](#会话控制与状态)确认关闭后再读回。
+
+```bash
+SESSION=$(ros2 run data_collection collection_control STATUS | python3 -c 'import json, sys; print(json.load(sys.stdin)["session_dir"])')
+ros2 run data_collection inspect_collection "$SESSION" --verify-mcap
+```
+
+检查各选中话题有样本、`submitted=written`、`dropped=0`，并核对 MCAP 读回结果。
+
+### 独立 PICO 输入采集
+
+本流程仅使用 PICO 输入，可在未安装夹爪时验收 XR JSONL 与 MCAP 的对账。只需要 XR JSONL 时直接使用独立录制命令。 [固定时长录制与发布](../remote_control/README.md#固定时长录制与发布)
+
+终端 A 选择 `xr_raw`。已运行采集器时，先按上文结束旧录制及 launch，再启动。
+
+```bash
+ros2 launch data_collection data_collection.launch.py \
+  data_root:=/home/agi/aimdk-fsc/data/xr_baseline streams:=xr_raw
+```
+
+终端 B 确认 XR Service 运行，连接 PICO 并开启 Controller 和 Send。服务就绪后发送 START，收到 `ACK` 再取得本次会话路径并录制 30 秒。设备 ID 按实际 SDK 回调填写。 [PICO 与 XR Service](../remote_control/README.md#pico-与-xr-service)
+
+```bash
+ros2 run data_collection collection_control START
+```
+
+```bash
+SESSION=$(ros2 run data_collection collection_control STATUS | python3 -c 'import json, sys; print(json.load(sys.stdin)["session_dir"])')
+ros2 run remote_control xr_record --publish-xr-raw \
+  --device-id TestDevice --input-config /home/agi/aimdk-fsc/src/remote_control/config/input.json \
+  --sdk-library /opt/apps/roboticsservice/SDK/arm64/libPXREARobotSDK.so \
+  --output "$SESSION/xr.jsonl" --duration 30
+```
+
+等 `xr_record` 返回，让 SDK 退出时排空的回调也进入录制窗口。发送 STOP，确认 MCAP 关闭后对账。
+
+```bash
+ros2 run data_collection collection_control STOP
+```
+
+```bash
+python3 scripts/record_trial.py verify "$SESSION"
+```
+
+默认使用会话目录内的 `xr.jsonl`。日志在其他位置时给 `verify` 加 `--xr-jsonl "$XR_JSONL"`，其中 `XR_JSONL` 为同次录制的实际路径。查看 `readback.json` 中的完整双手帧及对账计数。要下载此类独立会话或普通机器人采集，请在本地 VS Code 下载任务中选 `all`。
+
+### 单次示教录制与读回
+
+**终端 A 启动采集器。** 以下为任务 `teleop_demo` 的无图像配置，显式选择 `xr_raw`。可按任务增减机器人话题。
+
+```bash
+ros2 launch data_collection data_collection.launch.py \
+  data_root:=/home/agi/aimdk-fsc/data/experiments/teleop_demo \
+  streams:=arms,hands,arm_commands,hand_commands,xr_raw
+```
+
+**终端 B 准备 PICO 和试次条件。** 确认 XR Service 运行，连接 PICO 并开启 Head、Controller、Send，开始前松开两侧 Grip。只读和执行均需要新鲜的机器人反馈、HAL 双臂位置命令及两侧有效 `CLAW` 反馈。无夹爪时可走上面的独立 XR 流程。 [PICO 与 XR Service](../remote_control/README.md#pico-与-xr-service)
+
+以下为双侧 CLAW 空载、关闭位置偏置补偿的示例。每轮按实际工况更新重复编号、起始姿态或参考编号、工具与负载，并使条件与遥操参数一致。设备 ID 使用 PICO SDK 回调中的实际标识。
+
+```bash
+CONDITIONS=$(mktemp /tmp/teleop_demo_conditions.XXXXXX.json)
+cat > "$CONDITIONS" <<'EOF'
+{
+  "protocol": "teleop_demo",
+  "group": "compensation-off",
+  "repetition": 1,
+  "initial_condition": "双臂静止于本轮接管起始姿态，两侧 Grip 松开",
+  "tool_and_load": "双侧 CLAW，空载",
+  "compensation": false
+}
+EOF
+
+TELEOP_ARGS=(
+  --device-id TestDevice
+  --input-config /home/agi/aimdk-fsc/src/remote_control/config/input.json
+  --mapping-config /home/agi/aimdk-fsc/src/remote_control/config/mapping.json
+  --sdk-library /opt/apps/roboticsservice/SDK/arm64/libPXREARobotSDK.so
+  --load-description '双侧 CLAW，空载'
+  --no-compensation
+)
+```
+
+**二选一开始录制。** 只读模式记录输入、反馈与 IK 结果。
+
+```bash
+python3 scripts/record_trial.py record --conditions "$CONDITIONS" -- "${TELEOP_ARGS[@]}"
+```
+
+实际执行前，确认动作空间并结束其他上肢发布进程。在终端 B 请求并查询 URS，确认 `UPPERBODY_REMOTE_SPLIT` 和 `RUNNING` 后再运行下方命令。终端 A 保持采集器运行。 [URS 模式控制](../functions/README.md#urs-模式控制)
+
+```bash
+python3 scripts/record_trial.py record --conditions "$CONDITIONS" -- "${TELEOP_ARGS[@]}" --execute
+```
+
+等待首次 Grip 提示后，按住对应侧 Grip 接管，Trigger 控制该侧夹爪。 [Grip 与执行行为](../functions/README.md#遥操持续执行)
+
+**在终端 B 按 Ctrl-C 结束，等命令返回。** 该入口负责 START，退出时先等遥操退出并收尾日志，再发 STOP。Ctrl-C 返回 `130`，采集收尾结果见 `experiment.json` 的 `capture.state`。采集器留在终端 A 等待下一轮。每次录制使用新的会话目录。
+
+本轮执行结束后，可在终端 B 按模式控制步骤请求恢复 SD 并查询 `STAND_DEFAULT` 和 `RUNNING`。如需在 URS 下回位，先完成回位再恢复 SD。 [URS 模式控制](../functions/README.md#urs-模式控制)
+
+**读回与标注。** 将入口打印的 `会话目录` 绝对路径粘贴给下方提示。它位于 `/home/agi/aimdk-fsc/data/experiments/teleop_demo/` 下。
+
+```bash
+read -r -p '粘贴本次会话目录的绝对路径: ' SESSION
+python3 scripts/record_trial.py verify "$SESSION"
+```
+
+用 `readback.json` 核对采集完整性、MCAP 读回与 XR 对账。只读试次若缺少选中的 HAL 指令话题，会报告采集不完整。各字段见 [XR 对账与时间配对](#xr-对账与时间配对)。
+
+同一会话保存 `experiment.json`、`session.json`、`raw/`、`mcap_storage.yaml`、`xr.jsonl`、`control/` 和 `console.txt`。现场备注可写入 `notes.md`。按实际结果选择 `success`、`failure` 或 `aborted`，可用 `--stage` 记录任务阶段。未标注的试次为 `unlabeled`。
+
+```bash
+python3 scripts/record_trial.py label "$SESSION" --outcome success --reason '双臂示教完成，夹爪按计划开合'
+```
+
+**下载。** 在终端 B 生成会话相对路径。再到本地 VS Code 运行 **机器人：下载采集数据**，选择本次使用的机器人连接并填入该路径。整次试次将下载到本地 `data/experiments/` 下的对应目录。按会话下载要求实验清单确认采集已收尾。
+
+```bash
+printf '%s\n' "${SESSION#/home/agi/aimdk-fsc/data/experiments/}"
+```
+
 ## 功能与数据范围
 
-按配置只读订阅所选来源，将每条收到的完整消息按来源频率保存到 MCAP。关节反馈、指令、IMU 和图像使用同一会话；在线录制不重采样、不插值，不生成统一帧 JSONL。START／STOP／STATUS 使用原有 ZeroMQ 控制协议。
+按配置只读订阅关节反馈、HAL 指令、IMU、相机等来源，按各路接收频率将完整消息保存到 MCAP，跨来源配对留给离线分析。选中 `xr_raw` 时，同一会话也保存 XR 发布端提供的原始回调。采集器通过 ZeroMQ 处理 START／STOP／STATUS，记录逐流计数与丢弃，并提供通用 MCAP 读回。XR 协议和输入质量由 `remote_control` 解释，试次入口汇总采集与 XR 核验结果。
 
 来源目录为 [x2_sources.json](config/x2_sources.json)，包含消息类型、QoS 和图像关联内参：
 
 | 来源 ID | 话题 | 类型 |
 | --- | --- | --- |
+| `xr_raw` | `/remote_control/xr/raw` | `std_msgs/msg/String` |
 | `arms` | `/aima/hal/joint/arm/state` | `aimdk_msgs/msg/JointStateArray` |
 | `hands` | `/aima/hal/joint/hand/state` | `aimdk_msgs/msg/HandStateArray` |
 | `head_joints` | `/aima/hal/joint/head/state` | `aimdk_msgs/msg/JointStateArray` |
@@ -88,72 +271,24 @@ MCAP 是当前录制格式。Humble 官方 `mcap_vendor` 将 LZ4 源码编入自
 
 ### 构建
 
-统一入口启动腕部驱动时复用 `aimdk_functions` 已安装的 `config/wrist_cameras.json`，需要 `realsense2_camera`。同步后构建：
+构建使用 `ament_cmake_python` 安装通用读回模块 `data_collection.readback`。同步本次读回改动后需重新构建并加载 overlay，使试次入口可以导入该模块。
+
+统一入口启动腕部驱动时复用 `aimdk_functions` 已安装的 `config/wrist_cameras.json`，需要 `realsense2_camera`。按用途选一条构建命令。
 
 ```bash
-bash scripts/build_overlay.sh aimdk_functions data_collection
-source /home/agi/aimdk/install/setup.bash
-source /home/agi/aimdk-fsc/install/local_setup.bash
+# 采集 SDK 已发布的机器人数据
+bash scripts/build_overlay.sh data_collection
+# 独立 XR 录制并入包
+bash scripts/build_overlay.sh remote_control data_collection
+# 完整遥操试次
+bash scripts/build_overlay.sh remote_control aimdk_functions data_collection
 ```
 
-## 统一启动与来源选择
+采集器负责启动腕部驱动时，将 `aimdk_functions` 一并构建。构建后按[常用采集流程](#常用采集流程)加载环境。
 
-数据根目录使用 `/home/agi/aimdk-fsc/data`，由项目目录挂载持久化并受同步 `/data/` 排除规则保护。远程清理任务仍会按其既有规则清除此目录。
+## 启动参数参考
 
-默认采集双臂、夹爪反馈及胸部、骨盆 IMU，使用 `profile` 选择 [collection_profiles.json](config/collection_profiles.json) 中的组合：
-
-| 预设 | 内容 |
-| --- | --- |
-| `upper_body`（默认） | 双臂、夹爪反馈及胸部、骨盆 IMU；共 4 个话题 |
-| `whole_body_imu` | 头部、双臂、腰部、双腿、夹爪反馈，以及胸部、骨盆 IMU；共 7 个话题 |
-| `whole_body_commands` | 头部、双臂、腰部、双腿及夹爪的 HAL 指令；共 5 个话题 |
-| `manipulation` | 双臂、夹爪、HAL 手臂指令、头部 RGBD、双腕 RGB |
-| `camera_check` | 头部 RGBD、双腕 RGB |
-| `full` | 全部关节反馈、全部五路 HAL 关节及夹爪指令、胸部及骨盆 IMU、头部与双腕 RGBD，以及图像内参 |
-
-```bash
-ros2 launch data_collection data_collection.launch.py \
-  data_root:=/home/agi/aimdk-fsc/data profile:=manipulation
-```
-
-采集全身关节反馈及胸部、骨盆 IMU，使用：
-
-```bash
-ros2 launch data_collection data_collection.launch.py \
-  data_root:=/home/agi/aimdk-fsc/data profile:=whole_body_imu
-```
-
-该预设不创建相机订阅或启动腕部驱动，按原频率保存七路反馈。录制前同步并重新构建 `data_collection`，加载 overlay 环境，再沿用 START／STATUS／STOP。头部、腰部和双腿仍需核对真机实际发布者与完整关节名称；按原始消息保留全部关节，不硬编码数量或数组槽位。所选来源未收到消息时按既有规则报告缺流，不自动跳过。
-
-无图像会显著降低输入负载，零丢弃仍以本轮 STATUS、收尾计数和 MCAP 读回为依据。STOP 后核对七路均有数据、submitted=written、dropped=0、队列排空，并核对原始关节名称、状态／故障、源时间和 IMU 字段。完整性标记的含义见下文会话状态说明。
-
-仅录全身关节及夹爪指令时使用：
-
-```bash
-ros2 launch data_collection data_collection.launch.py \
-  data_root:=/home/agi/aimdk-fsc/data profile:=whole_body_commands
-```
-
-该预设只读订阅五路 command。单独或组合采集时，用 `streams` 指定上表中的来源 ID，
-例如 `streams:=head_joints,head_commands` 同时采集头部反馈与指令。
-
-仅录骨盆 IMU 时使用：
-
-```bash
-ros2 launch data_collection data_collection.launch.py \
-  data_root:=/home/agi/aimdk-fsc/data streams:=imu_pelvis
-```
-
-也可用逗号分隔的 `streams` 覆盖预设。例如只录左腕 RGB 和双臂反馈：
-
-```bash
-ros2 launch data_collection data_collection.launch.py \
-  data_root:=/home/agi/aimdk-fsc/data streams:=arms,wrist_left_rgb
-```
-
-入口自动添加关联内参，仅启动所选腕部设备及其图像流。设备序列号、命名空间与图像参数读取现有腕部配置；来源目录中的话题应与该配置保持一致。头部 RGBD、关节和 IMU 复用机器人已有发布者。已经启动腕部驱动时增加 `start_wrist_cameras:=false`，复用其输出。
-
-配置在启动时冻结。切换采集范围时先 STOP，再关闭并重启统一入口。停止录制保持相机运行；关闭启动入口结束由该入口启动的驱动和采集器。
+数据根目录位于 `/home/agi/aimdk-fsc/data` 或其子目录，由项目目录挂载持久化并受同步 `/data/` 排除规则保护。远程清理任务仍按既有规则处理此目录。腕部设备序列号、命名空间及图像参数复用[腕部相机配置](../functions/README.md#左右腕部-d405-与单帧图像)，来源话题需与该配置一致。头部 RGBD、关节和 IMU 复用机器人已有发布者。
 
 | 参数 | 默认值／用途 |
 | --- | --- |
@@ -169,14 +304,6 @@ ros2 launch data_collection data_collection.launch.py \
 
 ## 会话控制与状态
 
-启动后等待控制指令。另一个控制终端加载相同环境，再执行：
-
-```bash
-ros2 run data_collection collection_control START
-ros2 run data_collection collection_control STATUS
-ros2 run data_collection collection_control STOP
-```
-
 START／STOP 成功返回 ACK，失败返回 ERROR。录制中重复 START 保持原会话；正常停止后重复 STOP 幂等。START 的 ACK 表示存储初始化完成，需查看 STATUS 确认各来源实际有数据。STOP 关闭接收门、排空队列、关闭 MCAP 并保存摘要后返回；节点继续等待下一次 START。
 
 STATUS 包含 `recording_enabled`、会话目录、队列条数／序列化消息字节数及峰值。`raw` 按话题包含 submitted／written／dropped、接收字节数、首末接收时间、首末源时间、实际接收频率和最近消息描述；在线状态额外提供单调接收年龄。图像描述保存分辨率、编码、步长和大小端标记。字节统计仅计序列化消息，不包含队列对象、DDS 缓冲和压缩器内存；队列容量仍按条数限制。
@@ -186,80 +313,6 @@ STATUS 包含 `recording_enabled`、会话目录、队列条数／序列化消�
 `complete` 表示正常关闭且无存储错误；`data_complete` 还要求每个选中话题至少成功写入一条消息且无队列丢弃。时间异常计数另行评估；该标记不包含字段有效性、同步精度或样本数量验收。未选来源不计为缺流。
 
 控制客户端默认连接 `tcp://127.0.0.1:5555`，超时 5000 ms，可用 `--endpoint`／`--timeout-ms` 调整。STOP 超时后继续查询 STATUS，确认 `recording_enabled=false`、`closed=true`、`queue_pending=0`。Python 客户端需使用可导入 `zmq` 的解释器。
-
-## 单次示教录制与读回
-
-本流程适用 X2 Ultra、SDK 1.1、PICO 遥操。在机器人 Humble 容器构建 `remote_control`、
-`aimdk_functions`、`data_collection` 后复验。先在已加载安装环境的容器终端显式选择
-`xr_raw`，并按任务选关节、指令或相机来源。以下是无图像的起步组合：
-
-```bash
-ros2 launch data_collection data_collection.launch.py \
-  data_root:=/home/agi/aimdk-fsc/data/experiments/peg_in_hole \
-  streams:=arms,hands,arm_commands,xr_raw
-```
-
-在容器另一终端准备一个条件 JSON 对象。示例字段如下，实际条件按实验方案填写。
-
-```json
-{
-  "protocol": "peg-in-hole-v1",
-  "group": "compensation-off",
-  "repetition": 1,
-  "initial_condition": "起始关节姿态与夹具参考编号",
-  "tool_and_load": "实际工具和负载",
-  "compensation": false
-}
-```
-
-在机器人项目根目录执行录制命令。`--` 后传入现有遥操参数。执行示教时由操作者按
-[上肢遥操执行约定](../functions/README.md#遥操持续执行)进入 URS/RUNNING 后显式添加 `--execute`。
-示例按只读观测启动，结束时用 Ctrl-C 收尾。
-
-```bash
-python3 scripts/record_trial.py record --conditions /实际路径/conditions.json -- \
-  --input-config /实际路径/input.json --mapping-config /实际路径/mapping.json \
-  --device-id 实际设备ID --load-description '实际姿态、工具与负载' --no-compensation
-```
-
-入口沿用 START／STOP，使用 STATUS 返回的新会话目录，并将同一个试次编号写入两份 JSONL。
-一个采集端点由一个录制入口管理。先结束遥操并等待日志落盘，入口再停止采集并记录收尾状态。
-会话产物为 `experiment.json`、采集器的 `session.json`、`raw/`、`mcap_storage.yaml`、
-`xr.jsonl`、`control/` 和 `console.txt`。可选现场备注放在会话目录的 `notes.md`。
-运行退出、MCAP 收尾和任务结果分别记录；每次重试创建新会话。
-
-录制结束后，将 `SESSION` 设置为入口输出的实际会话路径。在同一容器执行读回和任务标注：
-
-```bash
-python3 scripts/record_trial.py verify "$SESSION"
-python3 scripts/record_trial.py label "$SESSION" --outcome success --reason '按实验方案核实'
-```
-
-`verify` 保存 `readback.json`。任务标注默认 `unlabeled`，也可填写
-`success`、`failure` 或 `aborted`，并用 `--stage` 记录结果对应的任务阶段。
-
-`xr_raw` 保存遥操进程发布的 `/remote_control/xr/raw`，类型为 `std_msgs/msg/String`。
-JSON 信封 `remote_control.xr_raw.v1` 保留 SDK 原始 Base64 载荷、回调类型、设备、
-`sdk_connection_id`、`callback_seq`、机器人侧系统／单调接收纳秒及退出排空标记。
-遥操入口在解析及筛选前发布，使用 best-effort／volatile。原始 PICO 源时戳在载荷中，
-MCAP 索引使用采集器的 ROS 接收时戳。`verify` 使用目标设备与实际输入配置核对 Tracking、
-可解析双手帧、断连、序号缺口，并和 XR JSONL 按原始事件标识与内容对账。
-
-对实际发过控制命令的会话，用同一 Humble 环境导出配对索引：
-
-```bash
-python3 scripts/align_trial.py "$SESSION" --stream arms --stream hands
-```
-
-`alignment.jsonl` 以控制日志中的实际发送目标为动作，按输入序号和回调标识关联 XR，保留
-命令使用的反馈快照。其他观测按命令 ROS 时戳取同话题此前最近的 MCAP 接收样本，
-输出从零开始的消息索引、纳秒差和缺样状态。用重复的 `--stream` 选择来源；提供
-`--max-age-ms` 时，超龄样本记为缺样。会话摘要记录接收门开启、关闭附近的系统、ROS 和单调
-时钟采样。该配对描述机器人侧接收时间，硬件同步与跨设备时钟偏差需另测。
-
-用现有“机器人：下载采集数据”任务填入 `peg_in_hole/<会话目录名>` 下载一次实验。
-验收先完成一轮含双臂和夹爪动作的短示教，核对目标设备 Tracking、XR 对账、实际发布与观测配对，
-以及本地目录和标签。再执行一轮只读断连录制，检查 MCAP 断连事件、进程退出原因和已录数据。
 
 ## 存储与读回
 
@@ -273,15 +326,32 @@ python3 scripts/align_trial.py "$SESSION" --stream arms --stream hands
 
 默认 Zstd／Fast 分块无损压缩，保留消息索引与摘要。RGB 和深度均保存原始 Image，不进行 JPEG 或视频编码。MCAP 可在压缩无收益时保存未压缩块；配置依据 [Humble MCAP 插件](https://github.com/ros2/rosbag2/blob/humble/rosbag2_storage_mcap/README.md#writer-configuration)。实际体积、持续写入速度和 Jetson 负载需录制测量。
 
-STOP 后用 STATUS 中的实际会话目录替换下方占位符：
-
-```bash
-ros2 run data_collection inspect_collection /ABSOLUTE/SESSION_DIR --verify-mcap
-```
-
-工具遍历 MCAP、反序列化所有消息，核对话题、类型及逐话题写入数，检查图像尺寸、步长与数据长度，并报告源时间重复和回退。退出码 0 表示当前会话完整性规则通过，1 表示不完整，2 表示读取、结构或摘要不一致。仍需抽查图像内容、关节名称和实际数据意义。
+[手动起停与读回](#手动起停与读回)使用 `inspect_collection --verify-mcap`。工具遍历 MCAP、反序列化所有消息，核对话题、类型及逐话题写入数，检查图像尺寸、步长与数据长度，并报告源时间重复和回退。退出码 0 表示当前会话完整性规则通过，1 表示不完整，2 表示读取、结构或摘要不一致。仍需抽查图像内容、关节名称和实际数据意义。
 
 不带 `--verify-mcap` 时仅用标准库检查摘要，新会话不读 MCAP，报告 `raw_mcap_verified=false`；可在本地使用。历史 schema_version=1 会话继续按原规则读取 `frames.jsonl`；历史原始 MCAP 也可在 ROS 环境使用上述读回选项。旧 `record_raw_mcap` 启动参数已移除，新录制始终保存 MCAP。
+
+### XR 对账与时间配对
+
+`record_trial.py verify` 一次扫描生成 `readback.json`。查看 `data_complete`（采集完整性）、`raw_mcap_verified`（MCAP 读回）和 `xr_readback`（XR 输入与对账）。完整试次从 `experiment.json` 读取目标设备、试次编号和 XR 日志引用，独立 XR 会话从同次 JSONL 获取设备和输入配置。退出码 0 表示完整性、MCAP 及对账通过，1 表示数据或 XR 质量不足，2 表示结构、读回或协议错误。
+
+`xr_raw` 保存遥操进程发布的 `/remote_control/xr/raw`，类型为 `std_msgs/msg/String`。
+JSON 信封 `remote_control.xr_raw.v1` 保留 SDK 原始 Base64 载荷、回调类型、设备、
+`sdk_connection_id`、`callback_seq`、机器人侧系统／单调接收纳秒及退出排空标记。
+遥操入口在解析及筛选前发布，使用 best-effort／volatile。原始 PICO 源时戳在载荷中，
+MCAP 索引使用采集器的 ROS 接收时戳。`verify` 使用目标设备与实际输入配置核对 Tracking、
+可解析双手帧、断连、序号缺口，并和 XR JSONL 按原始事件标识与内容对账。组合核验通过需要目标设备至少一帧可按实际输入协议解析的双手数据，以及同次 JSONL 对账一致。
+
+对实际发过控制命令的会话，用同一 Humble 环境导出配对索引：
+
+```bash
+python3 scripts/align_trial.py "$SESSION" --stream arms --stream hands
+```
+
+`alignment.jsonl` 以控制日志中的实际发送目标为动作，按输入序号和回调标识关联 XR，保留
+命令使用的反馈快照。其他观测按命令 ROS 时戳取同话题此前最近的 MCAP 接收样本，
+输出从零开始的消息索引、纳秒差和缺样状态。用重复的 `--stream` 选择来源；提供
+`--max-age-ms` 时，超龄样本记为缺样。会话摘要记录接收门开启、关闭附近的系统、ROS 和单调
+时钟采样。该配对描述机器人侧接收时间，硬件同步与跨设备时钟偏差需另测。
 
 ## 压缩与写盘耗时诊断
 
@@ -333,5 +403,6 @@ python3 src/data_collection/scripts/benchmark_collection_io.py \
 5. 全量短录制：记录时长、MCAP 体积、实际接收频率、队列峰值、丢弃和 Jetson 负载；检查深度原始数值与容器压缩配置。
 6. 使用 `whole_body_commands`：确认五路指令的话题与类型匹配；STOP 后读回 MCAP，核对关节名称、完整指令字段、夹爪类型与左右数组，以及源时间／测量时间／序号；逐话题 submitted=written、dropped=0。真机未发布的来源须显示缺流，不作为采集完成。
 7. 重复 START、重复 STOP 及连续两次会话：确认幂等、收尾计数守恒、队列清空且消息不跨会话。已选来源不发布时如实报告无数据。
+8. 示教与 XR 对账：录制一轮含双臂和夹爪动作的短示教，核对 Tracking、XR 对账、实际发布与观测配对，以及下载后的产物和标签。另录一轮只读断连，核对 MCAP 断连事件、进程退出原因及断连前的数据。
 
 C++ 节点、MCAP 写入和 ROS 启动均由用户同步后在机器人容器构建、运行与验证。本地旧 JSONL 验证结果不代表本版多模态验收通过。

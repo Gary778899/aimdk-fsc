@@ -43,6 +43,8 @@ ros2 run remote_control xr_record --device-id 实际设备标识 --input-config 
 ros2 run remote_control xr_stats /home/agi/aimdk-fsc/log/xr_session.jsonl
 ```
 
+如需同时将原始回调录入 MCAP，使用 `xr_record --publish-xr-raw`。完整命令见[独立 PICO 输入采集](../data_collection/README.md#独立-pico-输入采集)。
+
 每条原始回调记录callback_seq、接收单调时间、类型、原始status、设备标识、Base64字节副本及队列积压。
 每个完整输入帧记录独立seq及关联callback_seq。队列按FIFO消费，其他设备只记录原始数据。
 正常终止后排空原始回调；SDK终止失败时保留回调引用并记录失败。

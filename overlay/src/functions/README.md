@@ -3,6 +3,8 @@
 适用：X2 Ultra、官方 v1.3.0 模型、机器人 Ubuntu 22.04 / ROS 2 Humble / AimDK 环境。
 ROS 2 包名为 `aimdk_functions`，使用 `ament_python`，依赖 NumPy >=1.21。
 
+遥操入口负责 X2 侧的反馈、接管参考和执行。它从机器人参考关节目标计算 TCP 位姿，调用 `remote_control` 将手柄运动映射为候选 TCP 目标，再求双臂 IK、处理关节渐进与位置偏置补偿。显式执行时向 `/mc/upper_body_command` 发布原生上肢目标，控制日志保存实际发送值及关联反馈。HAL 指令和反馈由 `data_collection` 按所选来源独立采集。
+
 运动统一入口为 `upper_body_control joint/tcp/gripper`。保留 `volume_control`、
 `arm_compensation_probe` 和 `upper_body_kinematics_check` 独立工具；
 `upper_body_home` 提供home位置录制与回位；`upper_body_trajectory` 提供已发布轨迹导出及回放。
@@ -20,18 +22,99 @@ ROS 2 包名为 `aimdk_functions`，使用 `ament_python`，依赖 NumPy >=1.21�
 
 ## 构建与入口
 
-用户通过现有任务同步后，在机器人 Humble 容器工作区根目录执行：
+首次使用遥操或更新内容需要重新安装时，在机器人 Humble 容器构建这两个包。只更新本包的安装内容时，构建命令可仅指定 `aimdk_functions`。
 
 ```bash
-bash scripts/build_overlay.sh aimdk_functions
+cd /home/agi/aimdk-fsc
+bash scripts/build_overlay.sh remote_control aimdk_functions
+```
+
+下文的终端 A、B 均为机器人 Humble 容器中的 Bash 终端。分别加载环境。
+
+```bash
+cd /home/agi/aimdk-fsc
 source /home/agi/aimdk/install/setup.bash
-source /home/agi/aimdk-fsc/install/local_setup.bash
-ros2 run aimdk_functions upper_body_control --help
-ros2 run aimdk_functions upper_body_control tcp --help
+source install/local_setup.bash
 ```
 
 固定 underlay 为 `/home/agi/aimdk/install`；其他安装位置使用 `AIMDK_UNDERLAY_INSTALL`，
 并加载对应环境。流程见[项目说明](../../../README.md)。
+
+## 上肢实验常用命令
+
+### URS 模式控制
+
+独立遥操用**终端 A**运行厂商 SDK 的 `py_examples` 客户端。通过采集包录制时，按采集流程指定的终端运行同样的命令。启动执行遥操或上肢动作前，确认动作空间并结束其他上肢发布进程，然后请求进入 URS。
+
+```bash
+ros2 run py_examples set_mc_action URS
+timeout -k 2s 10s ros2 run py_examples get_mc_action
+```
+
+设置客户端的成功提示表示请求获接受。查询须同时显示 `Mode name: UPPERBODY_REMOTE_SPLIT` 和 `Mode status: 100`（RUNNING）。若显示 `200`（TRANSITION），等待切换后重新查询。SDK 客户端会持续等待服务发现，查询命令以 `timeout` 限定等待时间。超时或服务找不到时，检查当前终端的环境及服务。
+
+```bash
+ros2 pkg executables py_examples
+ros2 service list -t | grep -E 'GetMcAction|SetMcAction'
+```
+
+结束遥操并等待进程退出后，在模式控制终端请求稳定站立并查询。若本次还要执行 Home 回位，在 URS 下完成后再切换。 [Home 回位](#home位置录制与回位)
+
+```bash
+ros2 run py_examples set_mc_action SD
+timeout -k 2s 10s ros2 run py_examples get_mc_action
+```
+
+恢复确认值为 `Mode name: STAND_DEFAULT` 和 `Mode status: 100`。
+
+### 独立 PICO 遥操
+
+在**终端 B**确认 XR Service 已监听，仅在端口未监听时启动服务。用 XRoboToolkit 连接机器人，开启 **Head、Controller 和 Send**，先松开两侧 Grip。 [PICO 与 XR Service](../remote_control/README.md#pico-与-xr-service)
+
+现场只读和执行都需要新鲜的机器人反馈、HAL 双臂位置命令及两侧有效 `CLAW` 反馈。单独核对 PICO 输入可用 `xr_watch`。 [只读输入检查](../remote_control/README.md#常驻输入测试)
+
+在终端 B 定义本次遥操命令。将 `TestDevice` 和负载说明改为现场实际值。
+
+```bash
+teleop=(
+  ros2 run aimdk_functions upper_body_teleop_observe
+  --device-id TestDevice
+  --input-config src/remote_control/config/input.json
+  --mapping-config src/remote_control/config/mapping.json
+  --sdk-library /opt/apps/roboticsservice/SDK/arm64/libPXREARobotSDK.so
+  --xr-output "log/xr_$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S).jsonl"
+  --load-description 'CLAW，空载'
+)
+
+# 只读观测 60 秒，含等待 XR 和 Grip 的时间
+"${teleop[@]}" --duration 60
+```
+
+只读观测保存 XR 与 IK 日志，可观察按 Grip 后的映射和 IK 结果。结束只读进程后，在终端 A 确认 URS／RUNNING，再在定义了 `teleop` 的终端 B 显式执行。 [URS 模式控制](#urs-模式控制)
+
+```bash
+"${teleop[@]}" --execute
+```
+
+执行默认开启位置偏置补偿，关闭补偿的对照可追加 `--no-compensation`。看到等待首次 Grip 的提示后，按住对应侧 Grip 接管，Trigger 控制该侧夹爪。松开 Grip 会停止该侧继续跟随手柄，保持当时的理想目标，程序继续发布保持命令。结束整次遥操时松开两侧 Grip，在终端 B 按 **Ctrl-C** 停发并等待日志收尾，再恢复 SD。 [URS 模式控制](#urs-模式控制)
+
+每次启动会打印实际 XR 与 IK／控制日志路径。统计时将下列参数替换为本次打印的 IK 或控制日志。
+
+```bash
+ros2 run aimdk_functions upper_body_teleop_stats /实际路径/上肢日志.jsonl
+```
+
+需要把示教与机器人话题一起归档时，使用采集包的试次入口启动遥操。 [单次示教录制与读回](../data_collection/README.md#单次示教录制与读回)
+
+### 单次动作与回位
+
+| 实验操作 | 入口 | 命令示例 |
+| --- | --- | --- |
+| 关节小幅增量 | `upper_body_control joint` | [关节增量](#关节增量) |
+| TCP 相对平移 | `upper_body_control tcp` | [TCP 路径与双臂调度](#tcp路径与双臂调度) |
+| 夹爪开度 | `upper_body_control gripper` | [夹爪控制](#夹爪控制) |
+| 录制起始姿态、预览和执行回位 | `upper_body_home record/run` | [Home 位置录制与回位](#home位置录制与回位) |
+| 已发送轨迹导出与回放 | `upper_body_trajectory export/run` | [双臂轨迹导出与回放](#双臂轨迹导出与回放) |
 
 ## 左右腕部 D405 与单帧图像
 
@@ -77,7 +160,7 @@ ros2 launch aimdk_functions wrist_cameras.launch.py
 ## 控制约定
 
 所有动作默认只读，仅显式 `--execute` 创建发布器。执行前由操作者进入
-`UPPERBODY_REMOTE_SPLIT`（URS）并等待 `RUNNING`，确认动作空间及无其他节点同时发布上肢目标。
+`UPPERBODY_REMOTE_SPLIT`（URS）并等待 `RUNNING`。操作见 [URS 模式控制](#urs-模式控制)。
 启动时有界查询 GetMcAction，执行期间持续检查原生模式反馈。
 只读规划允许其他模式；规划后刷新反馈，再检查起点漂移与时效后开始执行。
 
@@ -137,7 +220,7 @@ ros2 run aimdk_functions upper_body_control joint --side both \
 
 ```bash
 cd /home/agi/aimdk-fsc
-# 手动从SD切换至URS，等待RUNNING，保持预期home姿态后录制。
+# 进入 URS／RUNNING 后保持预期 Home 姿态并录制。
 ros2 run aimdk_functions upper_body_home record
 
 # Ctrl-C结束upper_body_teleop_observe --execute，再查看回位起点、目标和夹爪开度。
@@ -543,17 +626,7 @@ python3 -m unittest discover -s src/functions/test -p 'test_upper_body_*.py'
 朝向验收先只读：面向任意方向，按Grip后依次向自身前、左、上移动，目标增量应分别以正X、正Y、正Z为主；
 保持手柄位姿只转头，目标应保持；重新Grip后按新的头显朝向对齐。左右侧分别验证。
 `mapping_candidate`记录每侧`head_yaw_rad`及实际`mapping_basis`，对应参考只在候选接受时生效。
-默认只读、补偿关闭；显式`--execute`开启下节定义的持续发布。在机器人容器只读运行：
-
-```bash
-ros2 run aimdk_functions upper_body_teleop_observe \
-  --device-id 实际设备标识 --input-config /实际路径/input.json \
-  --mapping-config /实际路径/mapping.json \
-  --xr-output /home/agi/aimdk-fsc/log/xr_observe.jsonl \
-  --duration 60 \
-  --load-description '实际工具和负载'
-ros2 run aimdk_functions upper_body_teleop_stats /实际路径/upper_body_观测或回放.jsonl
-```
+启动与日志统计命令见 [独立 PICO 遥操](#独立-pico-遥操)。只读模式关闭补偿计算。
 
 首帧及停流期间持续等待新XR帧，记录接收间隔、帧年龄和积压；等待期间不重复求解缓存帧。
 现场输入由独立接收线程持续解析、校验并记录全部回调和完整帧。
@@ -666,8 +739,7 @@ ROS反馈及发布定时器运行在独立单线程执行器，接收线程独�
 `ik_accepted.result.arms.*.candidate_rad`中。`joint_approach`记录`speed_rad_s`、`elapsed_s`、
 `scale`、`paused`及终点减当前理想目标的`remaining_rad`。首帧elapsed为空。
 
-同步后在机器人容器执行`bash scripts/build_overlay.sh remote_control aimdk_functions`并重新加载环境。
-先关闭补偿做单臂小幅验证：相邻理想目标最大变化应不超过30°/s乘发布间隔；保持Grip时无新IK仍逐步靠近，
+按 [构建与入口](#构建与入口)准备容器环境。先关闭补偿做单臂小幅验证：相邻理想目标最大变化应不超过30°/s乘发布间隔；保持Grip时无新IK仍逐步靠近，
 松开时应立即取消剩余运动，移动手柄后重按首帧增量为0。再复现局部无解与恢复，检查冻结和恢复日志，
 最后开启补偿比较理想与发送步长。反馈故障、输入失效及发布间隔检查继续沿用原契约。
 容器回归用例覆盖共同进度、无新IK推进、边沿接收冻结、取消终点后的恢复及误差分解。
@@ -703,29 +775,7 @@ ROS反馈及发布定时器运行在独立单线程执行器，接收线程独�
 重按后增量归零。保持期间停止XR输入，仍应按既有输入时限停发退出。
 容器回归用例同时覆盖双侧原子保持、夹爪过渡、跨边沿撤销及越限仍终止。
 
-在已手动进入URS/RUNNING、Service运行且PICO持续发送时，在机器人容器执行：
-
-```bash
-cd /home/agi/aimdk-fsc
-bash scripts/build_overlay.sh remote_control aimdk_functions
-source /home/agi/aimdk/install/setup.bash
-source /home/agi/aimdk-fsc/install/local_setup.bash
-
-TELEOP_LOG_DIR="/home/agi/aimdk-fsc/log/$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)"
-ros2 run aimdk_functions upper_body_teleop_observe \
-  --device-id TestDevice \
-  --input-config /home/agi/aimdk-fsc/src/remote_control/config/input.json \
-  --mapping-config /home/agi/aimdk-fsc/src/remote_control/config/mapping.json \
-  --sdk-library /opt/apps/roboticsservice/SDK/arm64/libPXREARobotSDK.so \
-  --xr-output "$TELEOP_LOG_DIR/xr_input.jsonl" \
-  --log-dir "$TELEOP_LOG_DIR" \
-  --timeout 10 --input-timeout 0.5 --duration 60 --display-interval 1 \
-  --load-description 'gripper，空载' --execute
-
-TELEOP_IK_LOGS=("$TELEOP_LOG_DIR"/[0-9]*.jsonl)
-ros2 run aimdk_functions upper_body_teleop_stats "${TELEOP_IK_LOGS[0]}"
-```
-
+按 [独立 PICO 遥操](#独立-pico-遥操)启动执行。复现固定时长实验时，追加 `--duration 60 --timeout 10`。
 首轮依次验证零增量保持、右臂小幅平移及旋转、松开／重按、左臂及双臂动作。
 预期首帧14轴命令匹配接管HAL参考，补偿从零引入；松开保持理想目标，补偿继续根据姿态反馈计算，重按连续。
 关闭Send后预期约0.5秒加调度开销内停发；记录实体响应，重新运行后可从当前HAL目标接管。
