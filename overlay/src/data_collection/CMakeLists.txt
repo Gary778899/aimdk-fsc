@@ -6,6 +6,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -88,6 +89,7 @@ ament_target_dependencies(data_collection_node
 install(TARGETS data_collection_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
+ament_python_install_package(${PROJECT_NAME})
 install(PROGRAMS scripts/collection_control.py
   DESTINATION lib/${PROJECT_NAME} RENAME collection_control)
 install(PROGRAMS scripts/inspect_collection.py

@@ -17,6 +17,7 @@ import time
 
 DEFAULT_ENDPOINT = 'tcp://127.0.0.1:5555'
 MANAGED_OPTIONS = ('--publish-xr-raw', '--session-id', '--xr-output', '--log-dir', '--help')
+READBACK_ERRORS = (OSError, ValueError, KeyError, TypeError, OverflowError, ImportError, RuntimeError)
 
 
 def read_object(path):
@@ -280,22 +281,84 @@ def finalize(directory, options, manifest, child):
     return finished(status) and status.get('complete') is True
 
 
-def verify(directory, manifest):
-    """在 Humble 环境读回 MCAP 和原始 XR，保存报告并返回核验退出码。"""
-    command = ['ros2', 'run', 'data_collection', 'inspect_collection', str(directory),
-               '--verify-mcap', '--xr-device-id', manifest['teleop']['device_id']]
-    xr = manifest['artifacts']['xr']
-    if xr:
-        command.extend(['--xr-jsonl', str(directory / xr)])
-    checked = subprocess.run(command, capture_output=True, text=True, check=False)
-    if checked.stderr:
-        print(checked.stderr, end='', file=sys.stderr)
-    report = json.loads(checked.stdout)
-    returncode = checked.returncode or (0 if xr else 1)
-    with update_manifest(directory) as current:
+def prepare_xr_readback(directory, session, manifest, options):
+    """根据摘要、实验清单和显式选项返回 XR 话题及校验器，配置错误向调用方传播。"""
+    from remote_control.readback import XrReadback
+
+    stream = next((entry for entry in session['mapping']['streams'] if entry['id'] == 'xr_raw'), None)
+    if stream is None:
+        raise ValueError('会话未选择 xr_raw')
+    if stream['message_type'] != 'std_msgs/msg/String':
+        raise ValueError('xr_raw 必须使用 std_msgs/msg/String')
+
+    if manifest is not None:
+        device = manifest['teleop']['device_id']
+        trial_id = manifest['trial_id']
+        if not isinstance(device, str) or not device or not isinstance(trial_id, str) or not trial_id:
+            raise ValueError('实验清单须声明有效的目标设备和试次编号')
+        artifact = manifest['artifacts']['xr']
+        reference = directory / artifact if artifact else None
+        return stream['topic'], XrReadback(device, reference, None, expected_session_id=trial_id)
+
+    reference, config = options.xr_jsonl, options.xr_input_config
+    if reference is not None:
+        reference = reference.expanduser()
+    elif (directory / 'xr.jsonl').exists():
+        reference = directory / 'xr.jsonl'
+    if config is not None:
+        config = config.expanduser()
+    return stream['topic'], XrReadback(options.xr_device_id, reference, config)
+
+
+def inspect_trial(directory, manifest, options):
+    """流式核对会话的 MCAP 和 XR，返回组合报告及退出码 0、1 或 2。"""
+    try:
+        from data_collection.readback import inspect_session, read_session, verify_mcap
+
+        session = read_session(directory)
+        report = inspect_session(directory, session=session)
+    except READBACK_ERRORS as error:
+        return dict(structure_valid=False, error=str(error), raw_mcap_verified=False, xr_readback=None), 2
+
+    xr = xr_report = None
+    handlers = {}
+    try:
+        xr_topic, xr = prepare_xr_readback(directory, session, manifest, options)
+    except READBACK_ERRORS as error:
+        xr_report = dict(quality_ok=False, error=str(error))
+    else:
+        def observe_xr_message(message, _received_ns):
+            """将已反序列化的 String 消息正文交给 XR 协议校验器。"""
+            xr.observe(message.data)
+
+        handlers[xr_topic] = observe_xr_message
+
+    try:
+        report['mcap_readback'] = verify_mcap(directory, session=session, message_handlers=handlers)
+    except READBACK_ERRORS as error:
+        report.update(mcap_readback=dict(verified=False, error=str(error)), xr_readback=xr_report)
+        return report, 2
+    report['raw_mcap_verified'] = True
+    if xr is not None:
+        xr_report = xr.report()
+    report['xr_readback'] = xr_report
+    if 'error' in xr_report:
+        return report, 2
+    incomplete = (not report['data_complete'] or not xr_report['quality_ok']
+                  or xr_report['jsonl_comparison'] is None)
+    return report, int(incomplete)
+
+
+def verify(directory, manifest, options):
+    """保存组合读回报告，更新已有实验清单并返回核验退出码。"""
+    report, returncode = inspect_trial(directory, manifest, options)
+    if manifest is None:
         write_json(directory / 'readback.json', report)
-        current['artifacts']['readback'] = 'readback.json'
-        current['capture']['readback_returncode'] = returncode
+    else:
+        with update_manifest(directory) as current:
+            write_json(directory / 'readback.json', report)
+            current['artifacts']['readback'] = 'readback.json'
+            current['capture']['readback_returncode'] = returncode
     print(directory / 'readback.json')
     return returncode
 
@@ -309,8 +372,11 @@ def main():
     recording.add_argument('--endpoint', default=DEFAULT_ENDPOINT)
     recording.add_argument('--timeout-ms', type=int, default=5000)
     recording.add_argument('teleop_args', nargs=argparse.REMAINDER, help='-- 后传入遥操参数')
-    checking = actions.add_parser('verify', help='读回 MCAP，保存会话报告')
+    checking = actions.add_parser('verify', help='读回 MCAP 和 XR 并保存报告，支持独立 XR 会话')
     checking.add_argument('session_dir', type=Path)
+    checking.add_argument('--xr-jsonl', type=Path, help='独立会话的同次 XR JSONL，默认会话内的 xr.jsonl')
+    checking.add_argument('--xr-device-id', help='独立会话的目标设备标识，默认取 XR JSONL 元数据')
+    checking.add_argument('--xr-input-config', type=Path, help='独立会话的 XR 输入协议 JSON，默认取 XR JSONL 元数据')
     labeling = actions.add_parser('label', help='更新本次示教的任务结果')
     labeling.add_argument('session_dir', type=Path)
     labeling.add_argument('--outcome', required=True, choices=('success', 'failure', 'aborted', 'unlabeled'))
@@ -324,11 +390,16 @@ def main():
             return record(options)
         directory = options.session_dir.expanduser().resolve()
         manifest_path = directory / 'experiment.json'
+        if options.action == 'verify':
+            if not manifest_path.exists():
+                return verify(directory, None, options)
+            if any(value is not None for value in (options.xr_jsonl, options.xr_device_id, options.xr_input_config)):
+                checking.error('--xr-jsonl、--xr-device-id 和 --xr-input-config 仅适用于无 experiment.json 的会话')
         manifest = read_object(manifest_path)
         if manifest['capture']['state'] == 'recording':
             raise ValueError('请等待录制入口写入会话终态')
         if options.action == 'verify':
-            return verify(directory, manifest)
+            return verify(directory, manifest, options)
         with update_manifest(directory) as current:
             current['outcome'] = dict(status=options.outcome, stage=options.stage, reason=options.reason,
                                       labeled_system_time_ns=time.time_ns())
