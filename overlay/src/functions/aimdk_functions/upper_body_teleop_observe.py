@@ -4,15 +4,14 @@ import argparse
 from dataclasses import asdict
 import hashlib
 from itertools import chain
-import json
 import math
 import sys
 import time
 
-from remote_control.cli import Recorder
 from remote_control.mapping import InputUnavailable, MappingConfig, Session
 from remote_control.protocol import InputConfig
-from remote_control.recording import XRLog
+from remote_control.raw_publisher import XRRawPublisher
+from remote_control.recording import Recorder, XRLog
 from remote_control.sdk import SDKSource
 
 from .dual_arm_control_core import ARM_NAMES
@@ -27,38 +26,6 @@ from .upper_body_kinematics.adapter import ArmKinematics
 from .upper_body_online_core import DualArmOnlineIK
 from .upper_body_teleop_replay import replay_frames
 from .upper_body_teleop_tools import MappingDisplay, live_result_timing
-
-
-class XRRawPublisher:
-    """发布供MCAP录制的原始SDK事件，独立统计发布调用错误。"""
-
-    def __init__(self, node, session_id):
-        """为当前node创建XR记录话题；session_id为可选会话编号，创建失败向调用方报告。"""
-        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-        from std_msgs.msg import String
-
-        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT,
-                         durability=DurabilityPolicy.VOLATILE)
-        self.publisher = node.create_publisher(String, '/remote_control/xr/raw', qos)
-        self.message_type, self.session_id = String, session_id
-        self.attempted = self.publish_calls_returned = 0
-        self.first_error = None
-
-    def __call__(self, event, drained):
-        """发布单条SDKEvent；drained标明关闭后排空，记录异常供会话结束时核对。"""
-        self.attempted += 1
-        try:
-            message = self.message_type(data=json.dumps(dict(
-                schema='remote_control.xr_raw.v1', session_id=self.session_id,
-                drained=drained, **event.to_dict()), ensure_ascii=False, allow_nan=False))
-            self.publisher.publish(message)
-        except Exception as error:
-            if self.first_error is None:
-                self.first_error = dict(sdk_connection_id=event.sdk_connection_id,
-                                        callback_seq=event.callback_seq,
-                                        message=f'{type(error).__name__}: {error}')
-        else:
-            self.publish_calls_returned += 1
 
 
 def parser():
@@ -379,11 +346,7 @@ def main(args=None):
                     if xr_log is not None:
                         xr_log.record('error', error_type=type(error).__name__, message=str(error))
                 if recorder is not None and source.is_closed:
-                    while True:
-                        event = source.read(timeout=0.)
-                        if event is None:
-                            break
-                        recorder.consume(event, source.backlog, drained=True)
+                    recorder.drain(source)
                 if source.error is not None:
                     reason, result = 'callback_failed', 1
                     if xr_log is not None:
@@ -405,10 +368,7 @@ def main(args=None):
                     if xr_log is not None:
                         try:
                             if raw_publisher is not None:
-                                xr_log.record(
-                                    'xr_raw_publish_summary', attempted=raw_publisher.attempted,
-                                    publish_calls_returned=raw_publisher.publish_calls_returned,
-                                    first_error=raw_publisher.first_error)
+                                raw_publisher.record_summary(xr_log)
                         finally:
                             xr_log.close(reason)
                 finally:

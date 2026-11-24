@@ -6,6 +6,7 @@ from pathlib import Path
 import time
 
 from .frames import XRFrame
+from .protocol import parse_tracking
 
 
 SCHEMA = 'remote_control.xr.v1'
@@ -53,6 +54,55 @@ class XRLog:
                 self.record('exit', reason=reason)
             finally:
                 self.stream.close()
+
+
+class Recorder:
+    """将固定设备的原始回调和完整帧写入同一日志，其他设备只保留原始事件。"""
+
+    def __init__(self, log, device_id, config, on_raw=None):
+        """保存日志、设备和输入配置；on_raw接收原始事件及排空标记，空设备名抛出ValueError。"""
+        if not device_id:
+            raise ValueError('device_id须为非空字符串')
+        self.log, self.device_id, self.config = log, device_id, config
+        self.on_raw = on_raw
+        self.frame_count = 0
+
+    def consume(self, event, backlog, drained=False):
+        """记录SDK事件及剩余队列长度backlog，并通知on_raw。
+
+        返回归一化的所选设备XRFrame，无完整帧时返回None，解析错误向调用方传播。
+        drained标记SDK关闭后的排空，此时只处理原始事件。
+        """
+        self.log.record('sdk_event', raw=event.to_dict(), backlog=backlog, drained=drained)
+        if self.on_raw is not None:
+            self.on_raw(event, drained)
+        if drained:
+            return
+        if event.error:
+            raise ValueError(f'SDK回调失败：{event.error}')
+        if event.kind == 'server_disconnected' or (
+                event.kind == 'device_missing' and event.device_id == self.device_id):
+            self.log.record('session_invalidated', callback_seq=event.callback_seq,
+                            sdk_connection_id=event.sdk_connection_id,
+                            received_monotonic_s=event.received_monotonic_s,
+                            reason=event.kind, device_id=self.device_id)
+            return
+        if event.device_id != self.device_id:
+            return
+        frame = parse_tracking(event, self.frame_count + 1, self.config)
+        if frame is not None:
+            self.log.record('xr_frame', frame=frame.to_dict(), callback_seq=event.callback_seq,
+                            sdk_connection_id=event.sdk_connection_id)
+            self.frame_count += 1
+        return frame
+
+    def drain(self, source):
+        """按FIFO记录已关闭SDK的剩余回调，并通过同一on_raw发布；写入失败向调用方传播。"""
+        while True:
+            event = source.read(timeout=0.)
+            if event is None:
+                return
+            self.consume(event, source.backlog, drained=True)
 
 
 def read_records(path):
